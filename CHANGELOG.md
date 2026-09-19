@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.6.0
+
+- Assign left, right, middle, Mouse4 and Mouse5 buttons, plus four wheel directions, to any action in Preferences. Support Ctrl/Alt/Shift combinations and common media/browser keyboard keys.
+- Capture mouse input directly in the selected shortcut field, preserve normal mouse behavior in target apps, and keep MacroPulse's own controls usable.
+- Ignore injected mouse events so auto-clicker and macro output cannot trigger shortcuts. Run the native listener on its own thread and defer reactivation until captured buttons are released.
+- Preserve typing protection, emergency stop, duplicate validation and transactional rollback with mixed keyboard/mouse bindings.
+- Add mouse event, persistence, native listener lifecycle and UI capture regression tests; document hardware and input limitations.
+
 ## 1.5.1
 
 - Release start and position-capture shortcuts while typing in supported external text fields. A bare letter such as G is no longer reserved by MacroPulse in those fields.

@@ -137,7 +137,7 @@ void App::paint(HDC target) {
     } else {
         card(dc, x, 138, available, 414);
         glyph(dc, 5, x + 24, 158, 25, Accent);
-        text(dc, L"Keyboard shortcuts", x + 62, 152, available - 86, 34, Text, 2);
+        text(dc, L"Input shortcuts", x + 62, 152, available - 86, 34, Text, 2);
         const wchar_t* names[] = {L"Auto-clicker", L"Run macro", L"Stop everything", L"Capture position"};
         const wchar_t* descriptions[] = {L"Start or stop clicking", L"Start or stop your sequence", L"Stop all actions immediately", L"Capture the cursor position"};
         for (int i = 0; i < 4; ++i) {
@@ -145,8 +145,8 @@ void App::paint(HDC target) {
             text(dc, names[i], x + 24, y, available - 346, 24, i == 2 ? Success : Text);
             text(dc, hotkeys[i] ? descriptions[i] : L"Shortcut unavailable: choose another", x + 24, y + 25, available - 346, 23, hotkeys[i] ? Muted : Danger, 3);
         }
-        text(dc, L"Click a shortcut, press your keys, then apply. Esc cancels.", x + 24, 447, available - 48, 23, Muted, 3);
-        text(dc, L"Launch shortcuts pause in supported text fields. Stop stays available.", x + 24, 523, available - 48, 23, Muted, 3);
+        text(dc, L"Select a shortcut, then press a key, click it again or scroll. Esc cancels.", x + 24, 447, available - 48, 23, Muted, 3);
+        text(dc, L"Mouse shortcuts keep normal clicks. Launch shortcuts pause in supported text fields.", x + 24, 523, available - 48, 23, Muted, 3);
         if (height >= 780) {
             card(dc, x, 574, available, 100);
             glyph(dc, 1, x + 26, 606, 28, Accent);

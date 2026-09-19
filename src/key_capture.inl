@@ -13,7 +13,7 @@ void App::applyTypingProtection(bool pause) {
     if (smoke) {
         if (std::any_of(captureHeld.begin(), captureHeld.end(), [](bool down) { return down; })) return;
     } else {
-        for (int key = VK_BACK; key < 256; ++key) if (GetAsyncKeyState(key) & 0x8000) return;
+        for (int key = VK_LBUTTON; key < 256; ++key) if (GetAsyncKeyState(key) & 0x8000) return;
     }
     // Never rebind a key while it is held as the user leaves a text field.
     MSG queued{}; while (PeekMessageW(&queued, hwnd, WM_HOTKEY, WM_HOTKEY, PM_REMOVE)) {
@@ -37,7 +37,7 @@ void App::beginKeyCapture(int id) {
     keyCaptureTarget = id; shortcutsSuspended = true; loneModifier = 0; captureHeld.fill(false);
     if (!smoke) for (int key : {VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN}) captureHeld[key] = (GetAsyncKeyState(key) & 0x8000) != 0;
     shortcutRegistry->clear();
-    notice = id == StepKey ? L"Press your keys · Click elsewhere to cancel." : L"Press your keys · Esc to cancel.";
+    notice = id == StepKey ? L"Press your keys · Click elsewhere to cancel." : L"Press keys, click this field or scroll · Esc to cancel.";
     InvalidateRect(control(id), nullptr, FALSE); InvalidateRect(hwnd, nullptr, FALSE);
 }
 void App::endKeyCapture(const std::wstring& message) {
@@ -49,7 +49,7 @@ void App::endKeyCapture(const std::wstring& message) {
 }
 void App::resumeShortcuts() {
     if (!shortcutsSuspended || keyCaptureTarget || textInput) return;
-    if (!smoke) for (int key = VK_BACK; key < 256; ++key) captureHeld[key] = (GetAsyncKeyState(key) & 0x8000) != 0;
+    if (!smoke) for (int key = VK_LBUTTON; key < 256; ++key) captureHeld[key] = (GetAsyncKeyState(key) & 0x8000) != 0;
     if (std::any_of(captureHeld.begin(), captureHeld.end(), [](bool down) { return down; })) return;
     MSG queued{}; while (PeekMessageW(&queued, hwnd, WM_HOTKEY, WM_HOTKEY, PM_REMOVE)) {}
     shortcutRegistry->initialize(preferences.hotkeys); shortcutsSuspended = false;
@@ -59,7 +59,7 @@ void App::resumeShortcuts() {
     updateTypingProtection(); editorState(); InvalidateRect(hwnd, nullptr, FALSE);
 }
 void App::acceptCapturedKey(uint16_t key, uint8_t modifiers) {
-    auto name = keyName(key, modifiers);
+    auto name = keyCaptureTarget == StepKey ? keyName(key, modifiers) : hotkeyName({key, modifiers});
     bool valid;
     if (keyCaptureTarget == StepKey) {
         Step step; step.action = static_cast<Action>(SendMessageW(control(StepType), CB_GETCURSEL, 0, 0));
@@ -72,7 +72,7 @@ void App::acceptCapturedKey(uint16_t key, uint8_t modifiers) {
     }
     if (!valid) { loneModifier = 0; InvalidateRect(hwnd, nullptr, FALSE); return; }
     set(keyCaptureTarget, name);
-    endKeyCapture(keyCaptureTarget == StepKey ? L"Key captured. Add or apply the step." : L"Key captured. Click Apply shortcuts to save.");
+    endKeyCapture(keyCaptureTarget == StepKey ? L"Key captured. Add or apply the step." : L"Input captured. Click Apply shortcuts to save.");
 }
 bool App::captureMessage(const MSG& message) {
     // This runs before IsDialogMessage, which consumes Tab and arrow navigation.
@@ -87,8 +87,28 @@ bool App::captureMessage(const MSG& message) {
     if (textInput) return false; // Letters used by global shortcuts must remain typeable in names and fields.
     if (!shortcutsSuspended) return false;
     const auto msg = message.message;
+    auto mouse = decodeMouseInput(msg, static_cast<DWORD>(message.wParam));
+    if (mouse && (keyCaptureTarget != StepKey)) {
+        bool capturing = keyCaptureTarget != 0;
+        bool wheel = mouse->delta != 0;
+        if (capturing && mouse->down && !wheel && message.hwnd != control(keyCaptureTarget)) {
+            endKeyCapture(L"Capture cancelled."); resumeShortcuts(); return false;
+        }
+        if (!wheel) {
+            // Include mouse release in the same deferral as keyboard release.
+            bool wasHeld = captureHeld[mouse->key]; captureHeld[mouse->key] = mouse->down;
+            if (!mouse->down && !wasHeld && capturing) return false; // The click that opened capture.
+        }
+        if (capturing && mouse->down) {
+            auto held = [&](int vk) { return smoke ? captureHeld[vk] : (GetAsyncKeyState(vk) & 0x8000) != 0; };
+            uint8_t mods = (held(VK_CONTROL) ? 1 : 0) | (held(VK_MENU) ? 2 : 0) | (held(VK_SHIFT) ? 4 : 0) |
+                ((held(VK_LWIN) || held(VK_RWIN)) ? 8 : 0);
+            acceptCapturedKey(mouse->key, mods);
+        }
+        resumeShortcuts(); return true;
+    }
     if (keyCaptureTarget && message.hwnd != control(keyCaptureTarget) &&
-        (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN || msg == WM_NCLBUTTONDOWN)) {
+        (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN || msg == WM_XBUTTONDOWN || msg == WM_NCLBUTTONDOWN)) {
         endKeyCapture(L"Capture cancelled."); resumeShortcuts(); return false;
     }
     bool down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
@@ -126,7 +146,7 @@ std::wstring App::bindingLabel(int id) const {
         if (captureHeld[VK_MENU] || captureHeld[VK_LMENU] || captureHeld[VK_RMENU]) label += L"Alt + ";
         if (captureHeld[VK_SHIFT] || captureHeld[VK_LSHIFT] || captureHeld[VK_RSHIFT]) label += L"Shift + ";
         if (captureHeld[VK_LWIN] || captureHeld[VK_RWIN]) label += L"Win + ";
-        return label.empty() ? L"Press a key…" : label + L"…";
+        return label.empty() ? (id == StepKey ? L"Press a key…" : L"Key / click here / scroll…") : label + L"…";
     }
     auto label = value(id); uint16_t key; uint8_t mods;
     if (parseKey(label, key, mods) && key >= VK_OEM_1 && key <= VK_OEM_102) {

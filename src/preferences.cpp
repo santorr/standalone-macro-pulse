@@ -1,4 +1,6 @@
 #include "preferences.hpp"
+#include "mouse_shortcuts.hpp"
+#include <cwctype>
 #include <shlobj.h>
 #include <fstream>
 #include <iomanip>
@@ -8,19 +10,40 @@ namespace pulse {
 static bool validHotkey(const Hotkey& key) {
     if (key.modifiers > 7 || key.key == VK_F12 || (key.key == VK_F4 && (key.modifiers & 2))) return false;
     if (key.key == VK_CONTROL || key.key == VK_SHIFT || key.key == VK_MENU || key.key == VK_LWIN) return false;
+    if (isMouseInput(key.key)) return true;
     uint16_t parsed = 0; uint8_t modifiers = 0;
     return parseKey(keyName(key.key, key.modifiers), parsed, modifiers) && parsed == key.key && modifiers == key.modifiers;
 }
 bool validHotkeys(const Hotkeys& keys, std::wstring& error) {
     for (size_t i = 0; i < keys.size(); ++i) {
-        if (!validHotkey(keys[i])) { error = L"Choose a key on its own or with Ctrl, Alt or Shift. F12, Alt+F4 and Windows key combinations are reserved."; return false; }
+        if (!validHotkey(keys[i])) { error = L"Choose a key, mouse button or wheel direction, alone or with Ctrl, Alt or Shift. F12, Alt+F4 and Windows key combinations are reserved."; return false; }
         for (size_t j = 0; j < i; ++j) if (keys[i] == keys[j]) { error = L"Each action must have a different shortcut."; return false; }
     }
     return true;
 }
 bool parseHotkey(const std::wstring& text, Hotkey& key) {
     Hotkey candidate;
-    if (!parseKey(text, candidate.key, candidate.modifiers) || !validHotkey(candidate)) return false;
+    if (!parseKey(text, candidate.key, candidate.modifiers)) {
+        // Keep mouse names out of the macro keyboard parser: SendInput keyboard
+        // events cannot represent mouse buttons or wheel directions.
+        std::wstring normalized;
+        for (wchar_t c : text) if (!iswspace(c)) normalized += static_cast<wchar_t>(towupper(c));
+        auto plus = normalized.find_last_of(L'+');
+        std::wstring input = normalized;
+        uint8_t modifiers = 0; uint16_t ignored = 0;
+        if (plus != std::wstring::npos) {
+            if (!parseKey(normalized.substr(0, plus + 1) + L"A", ignored, modifiers) || modifiers > 7) return false;
+            input = normalized.substr(plus + 1);
+        }
+        bool found = false;
+        for (uint16_t code : {uint16_t(VK_LBUTTON), uint16_t(VK_RBUTTON), uint16_t(VK_MBUTTON), uint16_t(VK_XBUTTON1), uint16_t(VK_XBUTTON2), WheelUp, WheelDown, WheelLeft, WheelRight}) {
+            auto name = hotkeyName({code, 0});
+            std::transform(name.begin(), name.end(), name.begin(), [](wchar_t c) { return static_cast<wchar_t>(towupper(c)); });
+            if (name == input) { candidate = {code, modifiers}; found = true; break; }
+        }
+        if (!found) return false;
+    }
+    if (!validHotkey(candidate)) return false;
     key = candidate; return true;
 }
 UINT nativeModifiers(const Hotkey& key) {
@@ -77,7 +100,7 @@ bool loadPreferences(const std::filesystem::path& file, Preferences& settings, s
     candidate.startDelayMs = static_cast<uint32_t>(delay); candidate.page = static_cast<int>(page);
     for (auto& key : candidate.hotkeys) {
         long long vk, modifiers;
-        if (!(in >> vk >> modifiers) || vk < 0 || vk > 255 || modifiers < 0 || modifiers > 7) return fail();
+        if (!(in >> vk >> modifiers) || vk < 0 || vk > WheelRight || modifiers < 0 || modifiers > 7) return fail();
         key = {static_cast<uint16_t>(vk), static_cast<uint8_t>(modifiers)};
     }
     in >> std::ws; if (in.peek() != '"' || !(in >> std::quoted(macroPath))) return fail();

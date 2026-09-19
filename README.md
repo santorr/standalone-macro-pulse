@@ -63,9 +63,15 @@ The delay is a **minimum wait before the action**. For Pause, it is the entire p
 
 ## Preferences and storage
 
-In **Preferences**, click a shortcut and press a key or combination, then click **Apply shortcuts**. Esc, clicking elsewhere or leaving the window cancels capture. **Restore defaults** prepares F6/F7/F8/F9; click Apply to confirm.
+In **Preferences**, click a shortcut and press a key or combination, then click **Apply shortcuts**. To capture a mouse button, click the selected shortcut field again using the desired button; to capture the wheel, scroll while the field is listening. Hold Ctrl/Alt/Shift to include modifiers. Esc, clicking elsewhere or leaving the window cancels capture. **Restore defaults** prepares F6/F7/F8/F9; click Apply to confirm.
 
-Letters, numbers, function keys, navigation keys and numpad keys work alone or with Ctrl/Alt/Shift. Punctuation follows the active keyboard layout. F12, Alt+F4, Windows key combinations and modifier-only shortcuts are reserved. Duplicate shortcuts are rejected. If a shortcut conflicts with another application, the previous shortcuts stay active. An unavailable stop shortcut disables execution until it is reconfigured.
+Letters, numbers, function keys, navigation keys, numpad keys and common media/browser keys work alone or with Ctrl/Alt/Shift. Punctuation follows the active keyboard layout. F12, Alt+F4, Windows key combinations and modifier-only shortcuts are reserved. Duplicate shortcuts are rejected. If a shortcut conflicts with another application, the previous shortcuts stay active. An unavailable stop shortcut disables execution until it is reconfigured.
+
+Since **1.6.0**, shortcuts also support **MouseLeft**, **MouseRight**, **MouseMiddle**, **Mouse4** (first side button), **Mouse5** (second side button), and **WheelUp / WheelDown / WheelLeft / WheelRight**, with Ctrl/Alt/Shift combinations. The horizontal directions require a wheel/device that exposes horizontal scrolling. The first click opens capture; the next input is the binding. Button shortcuts trigger on press, once until released. Wheel shortcuts accumulate high-resolution deltas into one notch, with a 250 ms repeat guard for the same combination.
+
+Mouse shortcuts **also deliver the normal click or scroll to the target application**. Their listener runs on a separate thread and ignores injected mouse input, so auto-clicker and macro output cannot trigger or stop themselves. Mouse start/capture shortcuts do not run while interacting with MacroPulse's own window; stop remains available. The external text-field protection below applies to mouse launch shortcuts too.
+
+This supports keyboard and mouse inputs exposed by Windows, not every possible hardware input. Extra proprietary mouse buttons should be mapped to a supported keyboard key (for example F13) in the device's software. Gamepads, joystick axes, gestures and arbitrary multi-key chords are not supported. Mouse bindings are shared listeners, so another application's use of the same button does not produce a registration-conflict warning.
 
 Shortcuts are suspended while capturing a combination or typing in MacroPulse, then restored after the keys are released. Start shortcuts do not execute actions while Preferences is in the foreground.
 
@@ -101,7 +107,7 @@ cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure --no-tests=error
 ```
 
-The eight CTest suites cover the model, timing engine, shortcut conflicts, storage recovery, library migration, session persistence, real UI controls, keyboard capture, the updater and external typing protection. Focus tests exercise actual native/UI Automation controls, real shortcut unregister/register behavior, emergency-stop preservation, conflicts on resume and held-key deferral. Updater tests reject malformed metadata, wrong repositories, invalid versions, corrupted downloads and incompatible executables. An isolated test host exercises the actual helper handoff, file replacement, backup and restart; it does not replace a user's application. CI tests make no network requests or synthetic mouse/keyboard inputs.
+The nine CTest suites cover the model, timing engine, shortcut conflicts, storage recovery, library migration, session persistence, real UI controls, keyboard capture, the updater, external typing protection and mouse shortcuts. Mouse tests cover all five buttons, four wheel directions, modifiers, injected-input rejection, held-button deferral, actual native listener startup/shutdown, persistence and mixed keyboard/mouse rollback. Focus tests exercise actual native/UI Automation controls, real shortcut unregister/register behavior, emergency-stop preservation, conflicts on resume and held-key deferral. Updater tests reject malformed metadata, wrong repositories, invalid versions, corrupted downloads and incompatible executables. An isolated test host exercises the actual helper handoff, file replacement, backup and restart; it does not replace a user's application. CI tests make no network requests or synthetic mouse/keyboard inputs.
 
 ```powershell
 .\build\Release\MacroPulse.exe --render-preview artifacts
@@ -125,12 +131,12 @@ To publish a future fix, update `VERSION` and `CHANGELOG.md`, commit/push to `ma
 ```powershell
 git switch main
 git pull --ff-only
-# VERSION and CHANGELOG.md must already be committed for 1.5.2.
-git tag -a v1.5.2 -m "MacroPulse 1.5.2"
-git push origin v1.5.2
+# VERSION and CHANGELOG.md must already be committed for 1.6.1.
+git tag -a v1.6.1 -m "MacroPulse 1.6.1"
+git push origin v1.6.1
 ```
 
-Assets are `MacroPulse-1.5.2-windows-x64.exe`, `MacroPulse-1.5.2-windows-x64.zip` and `SHA256SUMS.txt`. Keep this filename convention and the GitHub asset digest: the updater relies on them. GitHub supplies source archives automatically.
+Assets are `MacroPulse-1.6.1-windows-x64.exe`, `MacroPulse-1.6.1-windows-x64.zip` and `SHA256SUMS.txt`. Keep this filename convention and the GitHub asset digest: the updater relies on them. GitHub supplies source archives automatically.
 
 To create packages locally after a successful Release build:
 

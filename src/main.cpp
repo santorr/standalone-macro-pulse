@@ -1,6 +1,7 @@
 #include "dialogs.hpp"
 #include "engine.hpp"
 #include "preferences.hpp"
+#include "mouse_shortcuts.hpp"
 #include "text_focus.hpp"
 #include "library.hpp"
 #include "theme.hpp"
@@ -82,6 +83,7 @@ private:
     bool preferencesReady = false;
     bool arranging = false;
     bool keyboardNavigation = false;
+    std::unique_ptr<MouseShortcuts> mouseShortcuts; // Outlives registry cleanup.
     std::unique_ptr<HotkeyRegistry> shortcutRegistry;
     std::unique_ptr<TextFocusMonitor> textFocus;
     bool externalShortcutsPaused = false;
@@ -145,7 +147,7 @@ private:
     void schedulePreferences();
     bool persistPreferences();
     bool applyHotkeyEdits(bool feedback = true);
-    std::wstring shortcutName(size_t action) const { auto key = preferences.hotkeys[action]; return keyName(key.key, key.modifiers); }
+    std::wstring shortcutName(size_t action) const { auto key = preferences.hotkeys[action]; return hotkeyName(key); }
 };
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto app = reinterpret_cast<App*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -230,9 +232,10 @@ void App::create() {
     button(CheckUpdates, L"Check for updates", 2);
     restorePreferences();
     restoreLibrary();
+    if (!smoke) mouseShortcuts = std::make_unique<MouseShortcuts>(hwnd);
     shortcutRegistry = std::make_unique<HotkeyRegistry>(
-        [this](int id, const Hotkey& key) { return smoke || RegisterHotKey(hwnd, id, MOD_NOREPEAT | nativeModifiers(key), key.key) != FALSE; },
-        [this](int id) { if (!smoke) UnregisterHotKey(hwnd, id); });
+        [this](int id, const Hotkey& key) { return smoke || (isMouseInput(key.key) ? mouseShortcuts->acquire(id, key) : RegisterHotKey(hwnd, id, MOD_NOREPEAT | nativeModifiers(key), key.key) != FALSE); },
+        [this](int id) { if (!smoke && !mouseShortcuts->release(id)) UnregisterHotKey(hwnd, id); });
     shortcutRegistry->initialize(preferences.hotkeys);
     for (int i = 0; i < 4; ++i) hotkeys[i] = shortcutRegistry->active(i);
     if (std::any_of(std::begin(hotkeys), std::end(hotkeys), [](bool v) { return !v; })) {
@@ -600,6 +603,32 @@ void App::runSmoke() {
     check(shortcutName(0) == L"Ctrl+F10");
     set(HotkeyMacro, L"Ctrl+F10"); check(!applyHotkeyEdits(false) && preferences.hotkeys[1] == DefaultHotkeys[1]);
     set(HotkeyMacro, L"F7"); notice.clear(); exportPreview(L"preferences.png");
+    auto mouseEvent = [&](UINT event, UINT data = 0) {
+        MSG input{}; input.hwnd = control(HotkeyClick); input.message = event; input.wParam = data;
+        check(captureMessage(input));
+    };
+    for (auto [down, up, data, key] : {
+        std::array<UINT, 4>{WM_LBUTTONDOWN, WM_LBUTTONUP, 0, VK_LBUTTON},
+        {WM_RBUTTONDOWN, WM_RBUTTONUP, 0, VK_RBUTTON}, {WM_MBUTTONDOWN, WM_MBUTTONUP, 0, VK_MBUTTON},
+        {WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1 << 16, VK_XBUTTON1}, {WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON2 << 16, VK_XBUTTON2}}) {
+        command(HotkeyClick); mouseEvent(down, data);
+        check(!keyCaptureTarget && shortcutsSuspended && value(HotkeyClick) == hotkeyName({static_cast<uint16_t>(key), 0}));
+        check(!applyHotkeyEdits(false)); mouseEvent(up, data);
+        check(!shortcutsSuspended && applyHotkeyEdits(false) && preferences.hotkeys[0].key == key);
+    }
+    command(HotkeyClick); keyEvent(WM_KEYDOWN, VK_CONTROL);
+    mouseEvent(WM_XBUTTONDOWN, XBUTTON1 << 16); mouseEvent(WM_XBUTTONUP, XBUTTON1 << 16);
+    check(shortcutsSuspended && value(HotkeyClick) == L"Ctrl+Mouse4");
+    keyEvent(WM_KEYUP, VK_CONTROL); check(applyHotkeyEdits(false));
+    for (auto [event, delta, key] : {std::array<int, 3>{WM_MOUSEWHEEL, 120, WheelUp},
+        {WM_MOUSEWHEEL, -120, WheelDown}, {WM_MOUSEHWHEEL, -120, WheelLeft}, {WM_MOUSEHWHEEL, 120, WheelRight}}) {
+        command(HotkeyClick); mouseEvent(event, static_cast<UINT>(static_cast<WORD>(delta)) << 16);
+        check(!keyCaptureTarget && !shortcutsSuspended && applyHotkeyEdits(false) && preferences.hotkeys[0].key == key);
+    }
+    set(HotkeyClick, L"Mouse4"); set(HotkeyMacro, L"Ctrl+Mouse5"); set(HotkeyCapture, L"WheelUp");
+    check(applyHotkeyEdits(false)); notice.clear(); exportPreview(L"preferences-mouse.png");
+    command(HotkeyClick); exportPreview(L"preferences-mouse-capture.png");
+    keyEvent(WM_KEYDOWN, VK_ESCAPE); keyEvent(WM_KEYUP, VK_ESCAPE);
     command(DefaultKeys); check(applyHotkeyEdits(false)); notice.clear();
     command(NavMacro); exportPreview(L"library.png"); command(EditMacro); exportPreview(L"macros-empty.png");
     command(EditMacro); set(StepDelay, L"25"); command(AddStep);
@@ -726,7 +755,11 @@ LRESULT App::message(UINT msg, WPARAM wp, LPARAM lp) {
         if (HIWORD(lp) != key.key || static_cast<UINT>(LOWORD(lp) & (MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_WIN)) != nativeModifiers(key)) return 0; // Ignore stale queued bindings.
         if (action == 2) { stop(); return 0; }
         updateTypingProtection(); if (externalShortcutsPaused) return 0;
-        if (page == 2 && GetForegroundWindow() == hwnd) return 0; // Editing shortcuts must never start input.
+        if (isMouseInput(key.key)) {
+            POINT point{};
+            if (GetCursorPos(&point) && GetAncestor(WindowFromPoint(point), GA_ROOTOWNER) == hwnd) return 0;
+        }
+        if ((page == 2 || isMouseInput(key.key)) && GetForegroundWindow() == hwnd) return 0; // Editing shortcuts must never start input.
         if (action == 0) start(0); else if (action == 1) start(1); else capture(); return 0;
     }
     case WM_TIMER: if (wp == 2) persistPreferences(); else if (wp == 3) persistLibrary(); else { updateTypingProtection(); resumeShortcuts(); tick(); pollUpdates(); } return 0;
@@ -742,6 +775,7 @@ LRESULT App::message(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_DESTROY:
         textFocus.reset();
         engine.stop(); KillTimer(hwnd, 1); KillTimer(hwnd, 2); KillTimer(hwnd, 3); if (shortcutRegistry) shortcutRegistry->clear();
+        mouseShortcuts.reset();
         PostQuitMessage(smokeExit); return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);

@@ -50,14 +50,14 @@ bool App::applyHotkeyEdits(bool feedback) {
     Hotkeys candidate;
     auto fail = [&](const std::wstring& message) { notice = message; if (feedback) error(message); return false; };
     for (int i = 0; i < 4; ++i) if (!parseHotkey(value(HotkeyClick + i), candidate[i]))
-        return fail(L"Invalid shortcut. Choose a key or combination. F12 and Alt+F4 are reserved.");
+        return fail(L"Invalid shortcut. Choose a key, mouse button or wheel direction. F12 and Alt+F4 are reserved.");
     std::wstring problem;
     if (!validHotkeys(candidate, problem)) return fail(problem);
     for (const auto& step : macro.steps) if (conflictsWithHotkeys(step, candidate))
         return fail(L"The key " + keyName(step.key) + L" is already used in your macro. Choose another key for this shortcut.");
     size_t failed = 0;
     if (!shortcutRegistry->apply(candidate, failed))
-        return fail(keyName(candidate[failed].key, candidate[failed].modifiers) + L" is already used by another application. Your previous shortcuts are still active.");
+        return fail(hotkeyName(candidate[failed]) + L" could not be activated. It may be reserved or unavailable. Your previous shortcuts are still active.");
     preferences.hotkeys = candidate;
     for (int i = 0; i < 4; ++i) { hotkeys[i] = shortcutRegistry->active(i); set(HotkeyClick + i, shortcutName(i)); }
     notice = L"Your shortcuts are ready.";
