@@ -14,12 +14,20 @@ inline void rounded(Gdiplus::GraphicsPath& path, float x, float y, float w, floa
 }
 inline void surface(HDC dc, float x, float y, float w, float h, float radius, COLORREF fill, COLORREF border = CLR_INVALID) {
     if (w <= 0 || h <= 0) return;
+    if (radius <= 0 && border == CLR_INVALID) {
+        RECT rect{static_cast<LONG>(x), static_cast<LONG>(y), static_cast<LONG>(x + w), static_cast<LONG>(y + h)};
+        SetDCBrushColor(dc, fill); FillRect(dc, &rect, static_cast<HBRUSH>(GetStockObject(DC_BRUSH))); return;
+    }
+    RECT bounds{static_cast<LONG>(x), static_cast<LONG>(y), static_cast<LONG>(x + w + 1), static_cast<LONG>(y + h + 1)};
+    if (!RectVisible(dc, &bounds)) return;
     Gdiplus::Graphics graphics(dc); graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     Gdiplus::GraphicsPath path; rounded(path, x + .5f, y + .5f, w - 1, h - 1, radius);
     Gdiplus::SolidBrush brush(color(fill)); graphics.FillPath(&brush, &path);
     if (border != CLR_INVALID) { Gdiplus::Pen pen(color(border)); graphics.DrawPath(&pen, &path); }
 }
 inline void gradient(HDC dc, float x, float y, float w, float h, float radius, COLORREF a, COLORREF b, COLORREF border) {
+    RECT bounds{static_cast<LONG>(x), static_cast<LONG>(y), static_cast<LONG>(x + w + 1), static_cast<LONG>(y + h + 1)};
+    if (!RectVisible(dc, &bounds)) return;
     Gdiplus::Graphics graphics(dc); graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     Gdiplus::GraphicsPath path; rounded(path, x + .5f, y + .5f, w - 1, h - 1, radius);
     Gdiplus::LinearGradientBrush brush(Gdiplus::PointF(x, y), Gdiplus::PointF(x + w, y + h), color(a), color(b));

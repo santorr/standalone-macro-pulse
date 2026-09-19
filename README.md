@@ -107,7 +107,7 @@ cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure --no-tests=error
 ```
 
-The nine CTest suites cover the model, timing engine, shortcut conflicts, storage recovery, library migration, session persistence, real UI controls, keyboard capture, the updater, external typing protection and mouse shortcuts. Mouse tests cover all five buttons, four wheel directions, modifiers, injected-input rejection, held-button deferral, actual native listener startup/shutdown, persistence and mixed keyboard/mouse rollback. Focus tests exercise actual native/UI Automation controls, real shortcut unregister/register behavior, emergency-stop preservation, conflicts on resume and held-key deferral. Updater tests reject malformed metadata, wrong repositories, invalid versions, corrupted downloads and incompatible executables. An isolated test host exercises the actual helper handoff, file replacement, backup and restart; it does not replace a user's application. CI tests make no network requests or synthetic mouse/keyboard inputs.
+The ten CTest suites cover the model, timing engine, shortcut conflicts, storage recovery, library migration, session persistence, real UI controls, keyboard capture, the updater, external typing protection and mouse shortcuts. Mouse tests cover all five buttons, four wheel directions, modifiers, injected-input rejection, held-button deferral, actual native listener startup/shutdown, persistence and mixed keyboard/mouse rollback. Focus tests exercise actual native/UI Automation controls, real shortcut unregister/register behavior, emergency-stop preservation, conflicts on resume and held-key deferral. Updater tests reject malformed metadata, wrong repositories, invalid versions, corrupted downloads and incompatible executables. An isolated test host exercises the actual helper handoff, file replacement, backup and restart; it does not replace a user's application. Rendering regression tests compare cached/uncached pixels, partial redraws, DPI changes, active/idle control state, preserved scrolling and GDI resource use. CI tests make no network requests or synthetic mouse/keyboard inputs.
 
 ```powershell
 .\build\Release\MacroPulse.exe --render-preview artifacts
@@ -115,6 +115,10 @@ The nine CTest suites cover the model, timing engine, shortcut conflicts, storag
 ```
 
 The preview mode renders the app's own windows and controls, not other desktop windows. The benchmark uses simulated output and does not measure another application's ability to receive input. Generated previews stay outside Git. The icon is documented in `assets/README.md`.
+
+## Resize performance
+
+Version **1.6.1** batches only changed controls, coalesces redraw requests, reuses drawing buffers and caches unchanged control images. It preserves the native controls and visual theme. The local resize workload measured median improvements of about **3.4× to 7.1× at 96 DPI**, depending on the page. These are processing/drawing measurements, not a display-FPS guarantee. See the [method, measurements and regression coverage](https://github.com/santorr/standalone-macro-pulse/blob/main/docs/performance.md).
 
 ## CI/CD and releases
 
@@ -131,12 +135,12 @@ To publish a future fix, update `VERSION` and `CHANGELOG.md`, commit/push to `ma
 ```powershell
 git switch main
 git pull --ff-only
-# VERSION and CHANGELOG.md must already be committed for 1.6.1.
-git tag -a v1.6.1 -m "MacroPulse 1.6.1"
-git push origin v1.6.1
+# VERSION and CHANGELOG.md must already be committed for 1.6.2.
+git tag -a v1.6.2 -m "MacroPulse 1.6.2"
+git push origin v1.6.2
 ```
 
-Assets are `MacroPulse-1.6.1-windows-x64.exe`, `MacroPulse-1.6.1-windows-x64.zip` and `SHA256SUMS.txt`. Keep this filename convention and the GitHub asset digest: the updater relies on them. GitHub supplies source archives automatically.
+Assets are `MacroPulse-1.6.2-windows-x64.exe`, `MacroPulse-1.6.2-windows-x64.zip` and `SHA256SUMS.txt`. Keep this filename convention and the GitHub asset digest: the updater relies on them. GitHub supplies source archives automatically.
 
 To create packages locally after a successful Release build:
 

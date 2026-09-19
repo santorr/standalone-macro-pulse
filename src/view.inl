@@ -13,10 +13,18 @@ void App::text(HDC dc, const std::wstring& str, int x, int y, int w, int h, COLO
     SelectObject(dc, fonts[font]); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, color);
     DrawTextW(dc, str.c_str(), -1, &r, flags | DT_NOPREFIX | DT_END_ELLIPSIS);
 }
-void App::paint(HDC target) {
+void App::paint(HDC target, const RECT* region) {
+    RenderTiming timing(resizeReport.empty() ? nullptr : &renderMetrics.paintMs);
+    ++renderMetrics.paints;
     RECT bounds{}; GetClientRect(hwnd, &bounds);
-    HDC dc = CreateCompatibleDC(target); HBITMAP bitmap = CreateCompatibleBitmap(target, bounds.right, bounds.bottom);
-    auto old = SelectObject(dc, bitmap);
+    if (bounds.right <= 0 || bounds.bottom <= 0) return;
+    auto previousAllocations = paintBuffer.allocations();
+    bool buffered = paintBuffer.ensure(target, bounds.right, bounds.bottom);
+    renderMetrics.allocations += paintBuffer.allocations() - previousAllocations;
+    HDC dc = buffered ? paintBuffer.dc() : target;
+    int saved = SaveDC(dc);
+    RECT update = region ? *region : bounds;
+    IntersectClipRect(dc, update.left, update.top, update.right, update.bottom);
     SetDCBrushColor(dc, Bg); FillRect(dc, &bounds, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
     box(dc, 0, 0, 228, height, Sidebar, 0);
     box(dc, 227, 0, 1, height, RGB(40, 35, 56), 0);
@@ -159,7 +167,7 @@ void App::paint(HDC target) {
     for (const auto& w : widgets) {
         if (w.page >= 0 && w.page != page) continue;
         if (!(GetWindowLongPtrW(w.hwnd, GWL_STYLE) & WS_VISIBLE)) continue;
-        wchar_t klass[32]{}; GetClassNameW(w.hwnd, klass, 32); if (lstrcmpiW(klass, L"EDIT") != 0) continue;
+        if (!w.edit) continue;
         RECT rect{}; GetWindowRect(w.hwnd, &rect); MapWindowPoints(nullptr, hwnd, reinterpret_cast<POINT*>(&rect), 2);
         theme::surface(dc, float(rect.left - s(12)), float(rect.top - s(10)), float(rect.right - rect.left + s(24)), float(rect.bottom - rect.top + s(18)), float(s(8)), Field, GetFocus() == w.hwnd ? Accent : Line);
     }
@@ -168,8 +176,27 @@ void App::paint(HDC target) {
     std::wstring bottom = notice;
     if (active) bottom = snapshot.state == RunState::Countdown ? L"Move to your target…" : L"Running · " + shortcutName(2) + L" to stop";
     text(dc, bottom, x, height - 25, available, 20, failureShown ? Danger : Muted, 3);
-    BitBlt(target, 0, 0, bounds.right, bounds.bottom, dc, 0, 0, SRCCOPY);
-    SelectObject(dc, old); DeleteObject(bitmap); DeleteDC(dc);
+    if (buffered) BitBlt(target, update.left, update.top, update.right - update.left, update.bottom - update.top, dc, update.left, update.top, SRCCOPY);
+    RestoreDC(dc, saved);
+}
+
+void App::cachedControl(HWND c, HDC target, const RECT& bounds, UINT state, const std::function<void(HDC)>& draw) {
+    int id = GetDlgCtrlID(c);
+    auto& image = controlImages[id - NavClick]; if (!image) image = std::make_unique<ControlImage>();
+    ControlVisual visual{bounds.right, bounds.bottom, dpi, page, keyCaptureTarget,
+        static_cast<int>(SendMessageW(control(ClickButton), CB_GETCURSEL, 0, 0)),
+        static_cast<int>(SendMessageW(control(ClickPosition), CB_GETCURSEL, 0, 0)), state,
+        keyboardNavigation, GetPropW(c, L"PulseHover") != nullptr, IsWindowEnabled(c) != FALSE, GetFocus() == c,
+        (id == StepKey || (id >= HotkeyClick && id <= HotkeyCapture)) ? bindingLabel(id) : value(id),
+        value(ClickInterval), preferences.hotkeys};
+    if (!image->buffer.ensure(target, bounds.right, bounds.bottom, 32, 16)) { draw(target); return; }
+    if (!image->visual || *image->visual != visual) {
+        auto dc = image->buffer.dc(); int saved = SaveDC(dc);
+        IntersectClipRect(dc, bounds.left, bounds.top, bounds.right, bounds.bottom);
+        draw(dc); RestoreDC(dc, saved); image->visual = std::move(visual);
+    }
+    BitBlt(target, bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
+        image->buffer.dc(), bounds.left, bounds.top, SRCCOPY);
 }
 
 void App::drawButton(const DRAWITEMSTRUCT& item) {
@@ -181,7 +208,7 @@ void App::drawButton(const DRAWITEMSTRUCT& item) {
     bool binding = id == StepKey || (id >= HotkeyClick && id <= HotkeyCapture);
     COLORREF parentBackground = nav ? Sidebar : binding || id == EditMacro || id == CopyMacro || id == RemoveMacro || (id >= MouseLeft && id <= PresetFast) || (id >= AddStep && id <= DuplicateStep) || id == CreateMacro || id == ApplyHotkeys || id == DefaultKeys ? Panel : Bg;
     if (id >= PresetSlow && id <= PresetFast) parentBackground = RGB(32, 26, 52);
-    auto parentBrush = CreateSolidBrush(parentBackground); FillRect(item.hDC, &item.rcItem, parentBrush); DeleteObject(parentBrush);
+    SetDCBrushColor(item.hDC, parentBackground); FillRect(item.hDC, &item.rcItem, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
     bool chosen = (id == NavClick && page == 0) || (id == NavMacro && (page == 1 || page == 3)) || (id == NavSettings && page == 2);
     if (id >= MouseLeft && id <= MouseMiddle) chosen = SendMessageW(control(ClickButton), CB_GETCURSEL, 0, 0) == id - MouseLeft;
     if (id == FollowCursor || id == FixedPoint) chosen = SendMessageW(control(ClickPosition), CB_GETCURSEL, 0, 0) == id - FollowCursor;
@@ -222,7 +249,7 @@ void App::drawButton(const DRAWITEMSTRUCT& item) {
 
 void App::drawCombo(HWND c, HDC dc) {
     RECT r{}; GetClientRect(c, &r); bool enabled = IsWindowEnabled(c) != FALSE;
-    auto brush = CreateSolidBrush(Panel); FillRect(dc, &r, brush); DeleteObject(brush);
+    SetDCBrushColor(dc, Panel); FillRect(dc, &r, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
     theme::surface(dc, 0, 0, float(r.right), float(r.bottom), float(s(8)), Field, GetFocus() == c ? Accent : Line);
     int selectedItem = static_cast<int>(SendMessageW(c, CB_GETCURSEL, 0, 0));
     wchar_t label[128]{}; if (selectedItem >= 0 && SendMessageW(c, CB_GETLBTEXTLEN, selectedItem, 0) < 128) SendMessageW(c, CB_GETLBTEXT, selectedItem, reinterpret_cast<LPARAM>(label));
@@ -234,28 +261,46 @@ void App::drawCombo(HWND c, HDC dc) {
 }
 
 LRESULT CALLBACK App::widgetProc(HWND c, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR data) {
-    auto app = reinterpret_cast<App*>(data); wchar_t klass[32]{}; GetClassNameW(c, klass, 32);
+    auto app = reinterpret_cast<App*>(data);
+    int id = GetDlgCtrlID(c);
+    const auto& widget = app->widgets[app->widgetIndices[id - NavClick]];
+    RenderTiming timing(msg == WM_PAINT && !app->resizeReport.empty() ? &app->renderMetrics.childMs : nullptr);
+    if (msg == WM_PAINT) ++app->renderMetrics.childPaints;
     if (msg == WM_ERASEBKGND) {
         // Native controls must never clear with the system's light theme first.
-        int id = GetDlgCtrlID(c);
         COLORREF background = id == StepList || id == LibraryList ? Panel : id == NavClick || id == NavMacro || id == NavSettings ? Sidebar : Field;
         RECT rect{}; GetClientRect(c, &rect); auto dc = reinterpret_cast<HDC>(wp);
         SetDCBrushColor(dc, background); FillRect(dc, &rect, static_cast<HBRUSH>(GetStockObject(DC_BRUSH))); return 1;
     }
     if (msg == WM_KILLFOCUS && app->keyCaptureTarget == GetDlgCtrlID(c)) app->endKeyCapture(L"Capture cancelled.");
     if (GetDlgCtrlID(c) == StepList && app->macro.steps.empty() && (msg == WM_PAINT || msg == WM_PRINT || msg == WM_PRINTCLIENT)) {
-        PAINTSTRUCT ps{}; HDC dc = msg == WM_PAINT ? BeginPaint(c, &ps) : reinterpret_cast<HDC>(wp);
-        RECT rect{}; GetClientRect(c, &rect); int w = MulDiv(rect.right, 96, app->dpi), h = MulDiv(rect.bottom, 96, app->dpi);
+        PAINTSTRUCT ps{}; HDC target = msg == WM_PAINT ? BeginPaint(c, &ps) : reinterpret_cast<HDC>(wp), dc = target;
+        RECT rect{}; GetClientRect(c, &rect);
+        auto buffer = msg == WM_PAINT ? BeginBufferedPaint(target, &rect, BPBF_TOPDOWNDIB, nullptr, &dc) : nullptr;
+        if (!buffer) dc = target;
+        int w = MulDiv(rect.right, 96, app->dpi), h = MulDiv(rect.bottom, 96, app->dpi);
         app->box(dc, 0, 0, w, h, Panel, 0);
         int center = h >= 140 ? h / 2 : std::max(12, h / 2 - 18);
         if (h >= 140) { app->box(dc, w / 2 - 25, center - 68, 50, 50, RGB(44, 33, 72), 12); app->glyph(dc, 1, w / 2 - 12, center - 55, 24, Accent); }
         app->text(dc, L"Your first macro starts here", 10, center - 4, w - 20, 28, Text, 0, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
         app->text(dc, L"Choose an action below to add it.", 10, center + 28, w - 20, 23, Muted, 3, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        if (buffer) EndBufferedPaint(buffer, TRUE);
         if (msg == WM_PAINT) EndPaint(c, &ps);
         return 0;
     }
-    bool combo = lstrcmpiW(klass, L"COMBOBOX") == 0;
-    if (combo && msg == WM_PAINT) { PAINTSTRUCT ps{}; auto dc = BeginPaint(c, &ps); app->drawCombo(c, dc); EndPaint(c, &ps); return 0; }
+    bool combo = widget.combo;
+    if ((combo || widget.listbox) && msg == WM_PAINT) {
+        PAINTSTRUCT ps{}; auto target = BeginPaint(c, &ps); HDC dc = target;
+        RECT rect{}; GetClientRect(c, &rect);
+        if (combo) app->cachedControl(c, target, rect, 0, [&](HDC bufferDC) { app->drawCombo(c, bufferDC); });
+        else {
+            auto buffer = BeginBufferedPaint(target, &rect, BPBF_TOPDOWNDIB, nullptr, &dc);
+            if (!buffer) dc = target;
+            DefSubclassProc(c, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(dc), PRF_CLIENT);
+            if (buffer) EndBufferedPaint(buffer, TRUE);
+        }
+        EndPaint(c, &ps); return 0;
+    }
     if (combo && (msg == WM_PRINTCLIENT || msg == WM_PRINT)) { app->drawCombo(c, reinterpret_cast<HDC>(wp)); return 0; }
     if (msg == WM_MOUSEMOVE && !GetPropW(c, L"PulseHover")) {
         SetPropW(c, L"PulseHover", reinterpret_cast<HANDLE>(1)); TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, c, 0}; TrackMouseEvent(&track); InvalidateRect(c, nullptr, FALSE);

@@ -5,6 +5,7 @@
 #include "text_focus.hpp"
 #include "library.hpp"
 #include "theme.hpp"
+#include "paint_buffer.hpp"
 #include "updater.hpp"
 #include "version.hpp"
 #include <future>
@@ -36,13 +37,15 @@ enum Id {
     NavSettings, HotkeyClick, HotkeyMacro, HotkeyStop, HotkeyCapture, ApplyHotkeys, DefaultKeys,
     LibraryList, MacroName, BackLibrary, CheckUpdates
 };
-struct Widget { HWND hwnd; int id; int page; };
+struct Widget { HWND hwnd; int id; int page; bool edit = false, combo = false, listbox = false; RECT placed{}; bool positioned = false; };
 class App {
 public:
     HWND hwnd = nullptr;
     bool smoke = false;
     std::filesystem::path previewDirectory;
     int smokeExit = 0;
+    std::filesystem::path resizeReport;
+    bool renderRegression = false;
     int sessionTest = 0;
     std::filesystem::path sessionTestFile;
     App() = default;
@@ -105,15 +108,33 @@ private:
     HICON brandIcon = nullptr;
     HBRUSH fieldBrush = CreateSolidBrush(Field);
     std::vector<Widget> widgets;
+    std::array<HWND, CheckUpdates - NavClick + 1> controls{};
+    std::array<size_t, CheckUpdates - NavClick + 1> widgetIndices{};
+    std::array<int, 4> columnWidths{};
+    PaintBuffer paintBuffer;
+    struct ControlVisual {
+        int width, height, dpi, page, capture, button, position;
+        UINT state;
+        bool keyboard, hover, enabled, focused;
+        std::wstring label, interval;
+        Hotkeys hotkeys;
+        bool operator==(const ControlVisual&) const = default;
+    };
+    struct ControlImage { PaintBuffer buffer; std::optional<ControlVisual> visual; };
+    std::array<std::unique_ptr<ControlImage>, CheckUpdates - NavClick + 1> controlImages;
+    void cachedControl(HWND c, HDC target, const RECT& bounds, UINT state, const std::function<void(HDC)>& draw);
+    int laidOutPage = -1;
+    SIZE laidOutPixels{};
+    int laidOutDpi = 0;
     std::wstring notice;
     int s(int v) const { return MulDiv(v, dpi, 96); }
-    HWND control(int id) const { return GetDlgItem(hwnd, id); }
+    HWND control(int id) const { return id >= NavClick && id <= CheckUpdates ? controls[id - NavClick] : nullptr; }
     void create();
     void makeFonts();
     HWND add(int id, const wchar_t* klass, const wchar_t* text, DWORD style, int widgetPage);
     void combo(int id, const std::vector<std::wstring>& items);
     void layout();
-    void paint(HDC dc);
+    void paint(HDC dc, const RECT* region = nullptr);
     void drawButton(const DRAWITEMSTRUCT& item);
     void drawCombo(HWND control, HDC dc);
     void drawRow(const DRAWITEMSTRUCT& item);
@@ -141,6 +162,15 @@ private:
     void capture();
     void runSmoke();
     void checkRendering();
+    void runResizeBenchmark();
+    void runRenderRegression();
+    struct RenderMetrics { size_t layouts = 0, positions = 0, paints = 0, childPaints = 0, allocations = 0, columnWrites = 0; double layoutMs = 0, paintMs = 0, childMs = 0; } renderMetrics;
+    struct RenderTiming {
+        double* total;
+        std::chrono::steady_clock::time_point began;
+        explicit RenderTiming(double* value) : total(value), began(value ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{}) {}
+        ~RenderTiming() { if (total) *total += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began).count(); }
+    };
     void restorePreferences();
     void populatePreferences();
     Preferences collectPreferences() const;
@@ -164,14 +194,19 @@ void App::makeFonts() {
         fonts[i] = CreateFontW(-s(sizes[i]), 0, 0, 0, (i == 1 || i == 2 || i == 4) ? FW_SEMIBOLD : FW_NORMAL,
                               FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                               DEFAULT_PITCH, L"Segoe UI");
-    for (const auto& w : widgets) SendMessageW(w.hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(fonts[0]), TRUE);
+    for (const auto& w : widgets) {
+        SendMessageW(w.hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(fonts[0]), TRUE);
+        if (w.combo) { SendMessageW(w.hwnd, CB_SETITEMHEIGHT, static_cast<WPARAM>(-1), s(34)); SendMessageW(w.hwnd, CB_SETITEMHEIGHT, 0, s(34)); }
+        if (w.listbox) SendMessageW(w.hwnd, LB_SETITEMHEIGHT, 0, s(76));
+    }
     if (brandIcon) DestroyIcon(brandIcon);
     brandIcon = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(101), IMAGE_ICON, s(48), s(48), 0));
 }
 HWND App::add(int id, const wchar_t* klass, const wchar_t* label, DWORD style, int widgetPage) {
     HWND c = CreateWindowExW(0, klass, label, WS_CHILD | WS_TABSTOP | style,
                             0, 0, 1, 1, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), GetModuleHandleW(nullptr), nullptr);
-    widgets.push_back({c, id, widgetPage});
+    controls[id - NavClick] = c; widgetIndices[id - NavClick] = widgets.size();
+    widgets.push_back({c, id, widgetPage, lstrcmpiW(klass, L"EDIT") == 0, lstrcmpiW(klass, L"COMBOBOX") == 0, lstrcmpiW(klass, L"LISTBOX") == 0});
     SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(fonts[0]), TRUE);
     if (std::wstring(klass) == L"EDIT") { SendMessageW(c, EM_SETLIMITTEXT, 64, 0); SendMessageW(c, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0); }
     if (std::wstring(klass) == L"COMBOBOX") {
@@ -249,14 +284,30 @@ void App::create() {
     if (smoke) PostMessageW(hwnd, WM_APP + 1, 0, 0); else checkUpdates();
 }
 void App::layout() {
+    RenderTiming timing(resizeReport.empty() ? nullptr : &renderMetrics.layoutMs);
     if (arranging || widgets.empty()) return;
-    arranging = true;
-    RECT r{}; GetClientRect(hwnd, &r); width = MulDiv(r.right, 96, dpi); height = MulDiv(r.bottom, 96, dpi);
+    RECT r{}; GetClientRect(hwnd, &r);
+    if (r.right <= 0 || r.bottom <= 0) return;
+    bool pageChanged = laidOutPage != page || laidOutDpi != dpi;
+    if (!pageChanged && laidOutPixels.cx == r.right && laidOutPixels.cy == r.bottom) {
+        // A run/stop or shortcut change can alter enabled controls without
+        // changing geometry. Keep state updates independent from layout work.
+        editorState(); return;
+    }
+    arranging = true; ++renderMetrics.layouts;
+    bool tall = height >= 780;
+    width = MulDiv(r.right, 96, dpi); height = MulDiv(r.bottom, 96, dpi);
+    if (pageChanged || tall != (height >= 780)) editorState();
     int x = 252, available = width - x - 32, listHeight = height - 530, editorY = 180 + listHeight + 20;
+    struct Placement { Widget* widget; RECT rect; };
+    std::vector<Placement> placements; placements.reserve(widgets.size());
     auto place = [&](int id, int px, int py, int w, int h = 38) {
-        wchar_t klass[32]{}; GetClassNameW(control(id), klass, 32);
-        if (lstrcmpiW(klass, L"EDIT") == 0) { px += 12; py += 10; w -= 24; h -= 18; }
-        SetWindowPos(control(id), nullptr, s(px), s(py), s(w), s(h), SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW);
+        auto& widget = widgets[widgetIndices[id - NavClick]];
+        if (widget.page >= 0 && widget.page != page) return;
+        if (widget.edit) { px += 12; py += 10; w -= 24; h -= 18; }
+        RECT next{s(px), s(py), s(px) + s(w), s(py) + s(h)};
+        if (widget.positioned && EqualRect(&widget.placed, &next)) return;
+        placements.push_back({&widget, next});
     };
     place(NavClick, 16, 148, 196, 48); place(NavMacro, 16, 204, 196, 48);
     place(NavSettings, 16, 260, 196, 48);
@@ -286,7 +337,10 @@ void App::layout() {
     place(RepeatCount, width - 120, 118, 88);
     place(StepList, x + 8, 214, available - 16, listHeight - 40);
     int columns[] = {44, 205, 110, available - 402};
-    for (int i = 0; i < 4; ++i) ListView_SetColumnWidth(control(StepList), i, s(columns[i]));
+    if (page == 1) for (int i = 0; i < 4; ++i) if (columnWidths[i] != s(columns[i])) {
+        ++renderMetrics.columnWrites; columnWidths[i] = s(columns[i]);
+        ListView_SetColumnWidth(control(StepList), i, columnWidths[i]);
+    }
     place(StepType, x + 20, editorY + 55, 218, 300); place(StepDelay, x + 254, editorY + 55, 142);
     place(StepKey, x + 414, editorY + 55, available - 434); place(StepButton, x + 414, editorY + 55, available - 434, 200);
     place(StepWheel, x + 414, editorY + 55, available - 434);
@@ -299,14 +353,35 @@ void App::layout() {
     place(ApplyHotkeys, x + 24, 478, 228, 42); place(DefaultKeys, x + 266, 478, 188, 42);
     const std::wstring startLabel = page ? L"Run" : L"Start";
     if (value(Start) != startLabel) set(Start, startLabel);
-    editorState(); if (selected() >= 0) ListView_EnsureVisible(control(StepList), selected(), FALSE);
+    constexpr UINT flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOCOPYBITS;
+    auto batch = placements.empty() ? nullptr : BeginDeferWindowPos(static_cast<int>(placements.size()));
+    for (const auto& move : placements) {
+        if (!batch) break;
+        const auto& rect = move.rect;
+        batch = DeferWindowPos(batch, move.widget->hwnd, nullptr, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, flags);
+    }
+    bool placed = batch && EndDeferWindowPos(batch);
+    for (const auto& move : placements) {
+        const auto& rect = move.rect;
+        if (placed || SetWindowPos(move.widget->hwnd, nullptr, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, flags)) {
+            move.widget->placed = rect; move.widget->positioned = true; ++renderMetrics.positions;
+        }
+        InvalidateRect(move.widget->hwnd, nullptr, FALSE);
+    }
+    if (pageChanged && page == 1 && selected() >= 0) ListView_EnsureVisible(control(StepList), selected(), FALSE);
+    laidOutPage = page; laidOutDpi = dpi; laidOutPixels = {r.right, r.bottom};
     arranging = false;
-    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+    // Let Windows coalesce consecutive redraw requests; never paint synchronously
+    // from the layout path. Stable children retain their already-rendered pixels.
+    if (pageChanged) RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
+    else RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_NOCHILDREN);
 }
 #include "view.inl"
 #include "preferences_ui.inl"
 #include "key_capture.inl"
 #include "render_checks.inl"
+#include "resize_benchmark.inl"
+#include "render_regression.inl"
 #include "library_ui.inl"
 #include "updater_ui.inl"
 std::wstring App::value(int id) const {
@@ -685,11 +760,10 @@ LRESULT App::message(UINT msg, WPARAM wp, LPARAM lp) {
         dpi = HIWORD(wp); makeFonts(); auto rect = reinterpret_cast<RECT*>(lp);
         SetWindowPos(hwnd, nullptr, rect->left, rect->top, rect->right - rect->left, rect->bottom - rect->top, SWP_NOZORDER | SWP_NOACTIVATE); layout(); return 0;
     }
-    case WM_ERASEBKGND: {
-        RECT rect{}; GetClientRect(hwnd, &rect);
-        SetDCBrushColor(reinterpret_cast<HDC>(wp), Bg); FillRect(reinterpret_cast<HDC>(wp), &rect, static_cast<HBRUSH>(GetStockObject(DC_BRUSH))); return 1;
-    }
-    case WM_PAINT: { PAINTSTRUCT ps{}; HDC dc = BeginPaint(hwnd, &ps); paint(dc); EndPaint(hwnd, &ps); return 0; }
+    // paint() covers the entire update rectangle in one buffered copy. An
+    // earlier erase would expose a blank frame between two complete frames.
+    case WM_ERASEBKGND: return 1;
+    case WM_PAINT: { PAINTSTRUCT ps{}; HDC dc = BeginPaint(hwnd, &ps); paint(dc, &ps.rcPaint); EndPaint(hwnd, &ps); return 0; }
     case WM_DRAWITEM: {
         const auto& item = *reinterpret_cast<DRAWITEMSTRUCT*>(lp);
         if (item.CtlType == ODT_LISTBOX) drawLibraryRow(item);
@@ -702,7 +776,11 @@ LRESULT App::message(UINT msg, WPARAM wp, LPARAM lp) {
                 RECT rect = item.rcItem; rect.left += s(12); SelectObject(item.hDC, fonts[0]); SetTextColor(item.hDC, Text); SetBkMode(item.hDC, TRANSPARENT);
                 DrawTextW(item.hDC, label, -1, &rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
             }
-        } else drawButton(item);
+        } else {
+            cachedControl(item.hwndItem, item.hDC, item.rcItem, item.itemState, [&](HDC dc) {
+                auto buffered = item; buffered.hDC = dc; drawButton(buffered);
+            });
+        }
         return TRUE;
     }
     case WM_MEASUREITEM: {
@@ -769,7 +847,7 @@ LRESULT App::message(UINT msg, WPARAM wp, LPARAM lp) {
         if (wp) { wchar_t klass[32]{}; GetClassNameW(GetFocus(), klass, 32); if (lstrcmpiW(klass, L"EDIT") == 0) beginTextInput(GetFocus()); }
         break;
     case TextFocusMonitor::ChangedMessage: updateTypingProtection(); return 0;
-    case WM_APP + 1: runSmoke(); return 0;
+    case WM_APP + 1: if (renderRegression) runRenderRegression(); else if (resizeReport.empty()) runSmoke(); else runResizeBenchmark(); return 0;
     case WM_CLOSE: if (updateDialog) return 0; engine.stop(); if (persistLibrary()) { persistPreferences(); DestroyWindow(hwnd); } else { error(notice); tick(); } return 0;
     case WM_QUERYENDSESSION: engine.stop(); persistPreferences(); return persistLibrary();
     case WM_DESTROY:
@@ -784,8 +862,8 @@ LRESULT App::message(UINT msg, WPARAM wp, LPARAM lp) {
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     struct DrawingRuntime {
         ULONG_PTR token = 0;
-        DrawingRuntime() { Gdiplus::GdiplusStartupInput input; Gdiplus::GdiplusStartup(&token, &input, nullptr); }
-        ~DrawingRuntime() { if (token) Gdiplus::GdiplusShutdown(token); }
+        DrawingRuntime() { BufferedPaintInit(); Gdiplus::GdiplusStartupInput input; Gdiplus::GdiplusStartup(&token, &input, nullptr); }
+        ~DrawingRuntime() { BufferedPaintUnInit(); if (token) Gdiplus::GdiplusShutdown(token); }
     } drawing;
     INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES}; InitCommonControlsEx(&icc);
     App app;
@@ -802,6 +880,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
         app.smoke = true; app.sessionTest = 3; app.sessionTestFile = args[2];
     }
     if (argc == 3 && std::wstring(args[1]) == L"--render-preview") { app.smoke = true; app.previewDirectory = args[2]; std::filesystem::create_directories(app.previewDirectory); }
+    if (argc == 3 && std::wstring(args[1]) == L"--resize-benchmark") { app.smoke = true; app.resizeReport = args[2]; }
+    if (argc == 2 && std::wstring(args[1]) == L"--render-regression") { app.smoke = true; app.renderRegression = true; }
+    if (!app.resizeReport.empty() || app.renderRegression) DisableProcessWindowsGhosting();
     if (args) LocalFree(args);
     struct InstanceGuard { HANDLE mutex = nullptr; ~InstanceGuard() { if (mutex) CloseHandle(mutex); } } instanceGuard;
     if (!app.smoke) {
@@ -820,7 +901,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     UINT dpi = GetDpiForSystem(); RECT size{0, 0, MulDiv(1180, dpi, 96), MulDiv(820, dpi, 96)};
     AdjustWindowRectExForDpi(&size, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi);
     RECT workArea{}; SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
-    auto window = CreateWindowExW(WS_EX_COMPOSITED, wc.lpszClassName, L"MacroPulse", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+    auto window = CreateWindowExW(0, wc.lpszClassName, L"MacroPulse", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
                                   CW_USEDEFAULT, CW_USEDEFAULT, std::min(size.right - size.left, workArea.right - workArea.left),
                                   std::min(size.bottom - size.top, workArea.bottom - workArea.top), nullptr, nullptr, instance, &app);
     if (!window) return 1;

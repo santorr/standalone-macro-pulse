@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.6.1
+
+- Make resize substantially cheaper by batching changed control positions, skipping inactive pages, caching column widths and removing synchronous whole-tree repaints.
+- Replace whole-window composition and per-frame bitmap allocation with reusable drawing buffers and state-aware button/combo caches. Keep antialiasing and native text controls.
+- Suppress intermediate parent erasing, copy only dirty pixels and buffer custom lists/combos to reduce flicker.
+- Preserve emergency-stop UI state and macro-list scrolling; refresh item heights when DPI changes.
+- Add pixel-level rendering, DPI, scrolling, run/stop state and GDI resource regression tests, plus an isolated resize benchmark and documented before/after measurements.
+
 ## 1.6.0
 
 - Assign left, right, middle, Mouse4 and Mouse5 buttons, plus four wheel directions, to any action in Preferences. Support Ctrl/Alt/Shift combinations and common media/browser keyboard keys.

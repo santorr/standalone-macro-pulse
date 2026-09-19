@@ -1,5 +1,5 @@
-// Exercise the real erase handlers, independently of the final screenshot:
-// a correct final frame alone cannot catch a white intermediate background.
+// Verify the main window defers erasing to its complete buffered frame, while
+// native controls that still erase use their dark background.
 void App::checkRendering() {
     auto check = [&](bool condition) { if (!condition) ++smokeExit; };
     HDC windowDC = GetDC(hwnd), dc = CreateCompatibleDC(windowDC);
@@ -11,6 +11,7 @@ void App::checkRendering() {
         if (!rect.right || !rect.bottom) return;
         FillRect(dc, &rect, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
         check(SendMessageW(window, WM_ERASEBKGND, reinterpret_cast<WPARAM>(dc), 0) != 0);
+        if (window == hwnd) { check(GetPixel(dc, 0, 0) == RGB(255, 255, 255)); return; }
         for (int y : {0L, rect.bottom / 2, rect.bottom - 1})
             for (int x : {0L, rect.right / 2, rect.right - 1}) {
                 auto pixel = GetPixel(dc, x, y);
