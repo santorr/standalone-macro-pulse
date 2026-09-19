@@ -1,7 +1,12 @@
+#include "dialogs.hpp"
 #include "engine.hpp"
 #include "preferences.hpp"
 #include "library.hpp"
 #include "theme.hpp"
+#include "updater.hpp"
+#include "version.hpp"
+#include <future>
+#include <cstring>
 #include <commctrl.h>
 #include <dwmapi.h>
 #include <shellapi.h>
@@ -27,7 +32,7 @@ enum Id {
     AddStep, UpdateStep, DeleteStep, UpStep, DownStep, DuplicateStep, RepeatCount,
     MouseLeft, MouseRight, MouseMiddle, FollowCursor, FixedPoint, PresetSlow, PresetNormal, PresetFast, CreateMacro,
     NavSettings, HotkeyClick, HotkeyMacro, HotkeyStop, HotkeyCapture, ApplyHotkeys, DefaultKeys,
-    LibraryList, MacroName, BackLibrary
+    LibraryList, MacroName, BackLibrary, CheckUpdates
 };
 struct Widget { HWND hwnd; int id; int page; };
 class App {
@@ -39,10 +44,21 @@ public:
     int sessionTest = 0;
     std::filesystem::path sessionTestFile;
     App() = default;
-    ~App() { for (auto f : fonts) if (f) DeleteObject(f); DeleteObject(fieldBrush); if (brandIcon) DestroyIcon(brandIcon); }
+    ~App() { updateStop.request_stop(); if (updateTask.valid()) { auto result = updateTask.get(); updates::discardDownload(result.payload); } for (auto f : fonts) if (f) DeleteObject(f); DeleteObject(fieldBrush); if (brandIcon) DestroyIcon(brandIcon); }
     LRESULT message(UINT msg, WPARAM wp, LPARAM lp);
     bool captureMessage(const MSG& message);
 private:
+    struct UpdateResult {
+        std::optional<updates::Release> release;
+        std::filesystem::path payload;
+        std::wstring error;
+    };
+    std::stop_source updateStop;
+    std::future<UpdateResult> updateTask;
+    std::optional<updates::Release> availableUpdate;
+    bool manualUpdate = false, downloadingUpdate = false, updateDialog = false;
+    void checkUpdates(bool manual = false);
+    void pollUpdates();
     Engine engine;
     Macro macro;
     Library library;
@@ -103,7 +119,7 @@ private:
     std::wstring value(int id) const;
     void set(int id, const std::wstring& v) { SetWindowTextW(control(id), v.c_str()); }
     bool number(int id, int lo, int hi, int& out, const wchar_t* name);
-    void error(const std::wstring& errorText) { MessageBoxW(hwnd, errorText.c_str(), L"MacroPulse", MB_OK | MB_ICONWARNING); }
+    void error(const std::wstring& errorText) { pulse::messageBox(hwnd, errorText.c_str(), L"MacroPulse", MB_OK | MB_ICONWARNING); }
     void command(int id);
     void refreshList(int select = -1);
     int selected() const { return ListView_GetNextItem(control(StepList), -1, LVNI_SELECTED); }
@@ -169,43 +185,44 @@ void App::create() {
     auto button = [&](int id, const wchar_t* t, int p) { add(id, L"BUTTON", t, BS_OWNERDRAW, p); };
     auto edit = [&](int id, const wchar_t* t, int p) { add(id, L"EDIT", t, ES_AUTOHSCROLL, p); };
     auto drop = [&](int id, int p) { add(id, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL, p); };
-    button(NavClick, L"Auto-clicker", -1); button(NavMacro, L"Mes macros", -1);
-    button(NavSettings, L"Préférences", -1);
-    button(Start, L"Démarrer", -1); button(Stop, L"Arrêter", -1);
+    button(NavClick, L"Auto-clicker", -1); button(NavMacro, L"My macros", -1);
+    button(NavSettings, L"Preferences", -1);
+    button(Start, L"Start", -1); button(Stop, L"Stop", -1);
     edit(StartDelay, L"1500", -1);
-    drop(ClickButton, 0); combo(ClickButton, {L"Clic gauche", L"Clic droit", L"Clic milieu"});
+    drop(ClickButton, 0); combo(ClickButton, {L"Left click", L"Right click", L"Middle click"});
     edit(ClickInterval, L"100", 0); edit(ClickCount, L"0", 0);
-    drop(ClickPosition, 0); combo(ClickPosition, {L"Suivre le curseur", L"Position fixe"});
+    drop(ClickPosition, 0); combo(ClickPosition, {L"Follow cursor", L"Fixed position"});
     edit(ClickX, L"0", 0); edit(ClickY, L"0", 0);
-    button(MouseLeft, L"Gauche", 0); button(MouseRight, L"Droit", 0); button(MouseMiddle, L"Milieu", 0);
-    button(FollowCursor, L"Suivre le curseur", 0); button(FixedPoint, L"Position fixe", 0);
+    button(MouseLeft, L"Left", 0); button(MouseRight, L"Right", 0); button(MouseMiddle, L"Middle", 0);
+    button(FollowCursor, L"Follow cursor", 0); button(FixedPoint, L"Fixed position", 0);
     button(PresetSlow, L"5 / s", 0); button(PresetNormal, L"10 / s", 0); button(PresetFast, L"50 / s", 0);
-    button(CreateMacro, L"Créer une macro", 0);
-    button(NewMacro, L"Nouvelle macro", 3); button(EditMacro, L"Modifier la macro", 3);
-    button(CopyMacro, L"Dupliquer", 3); button(RemoveMacro, L"Supprimer", 3);
-    button(BackLibrary, L"‹  Mes macros", 1); edit(MacroName, L"", 3);
+    button(CreateMacro, L"Create a macro", 0);
+    button(NewMacro, L"New macro", 3); button(EditMacro, L"Edit macro", 3);
+    button(CopyMacro, L"Duplicate", 3); button(RemoveMacro, L"Delete", 3);
+    button(BackLibrary, L"‹  My macros", 1); edit(MacroName, L"", 3);
     SendMessageW(control(MacroName), EM_SETLIMITTEXT, 80, 0);
-    add(LibraryList, L"LISTBOX", L"Bibliothèque de macros", LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL, 3);
+    add(LibraryList, L"LISTBOX", L"Macro library", LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL, 3);
     SetWindowTheme(control(LibraryList), L"", L""); SendMessageW(control(LibraryList), LB_SETITEMHEIGHT, 0, s(76));
     edit(RepeatCount, L"1", 1);
-    auto list = add(StepList, WC_LISTVIEWW, L"Étapes de la macro", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_OWNERDRAWFIXED | LVS_NOCOLUMNHEADER, 1);
+    auto list = add(StepList, WC_LISTVIEWW, L"Macro steps", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_OWNERDRAWFIXED | LVS_NOCOLUMNHEADER, 1);
     SetWindowSubclass(list, widgetProc, 1, reinterpret_cast<DWORD_PTR>(this));
     ListView_SetExtendedListViewStyle(list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
     ListView_SetBkColor(list, Panel); ListView_SetTextBkColor(list, Panel); ListView_SetTextColor(list, Text);
     SetWindowTheme(list, L"", L"");
-    const wchar_t* names[] = {L"N°", L"Action", L"Délai avant", L"Paramètres"};
+    const wchar_t* names[] = {L"No.", L"Action", L"Delay before", L"Parameters"};
     for (int i = 0; i < 4; ++i) { LVCOLUMNW col{}; col.mask = LVCF_TEXT | LVCF_WIDTH; col.pszText = const_cast<wchar_t*>(names[i]); col.cx = s(150); ListView_InsertColumn(list, i, &col); }
     drop(StepType, 1);
     std::vector<std::wstring> actions; for (int i = 0; i < 7; ++i) actions.push_back(actionName(static_cast<Action>(i)));
     combo(StepType, actions);
     edit(StepDelay, L"100", 1); button(StepKey, L"Ctrl+C", 1);
-    drop(StepButton, 1); combo(StepButton, {L"Clic gauche", L"Clic droit", L"Clic milieu"});
-    drop(StepPosition, 1); combo(StepPosition, {L"Position actuelle", L"Position fixe"});
+    drop(StepButton, 1); combo(StepButton, {L"Left click", L"Right click", L"Middle click"});
+    drop(StepPosition, 1); combo(StepPosition, {L"Current position", L"Fixed position"});
     edit(StepX, L"0", 1); edit(StepY, L"0", 1); edit(StepWheel, L"1", 1);
-    button(AddStep, L"Ajouter", 1); button(UpdateStep, L"Appliquer", 1); button(DeleteStep, L"Supprimer", 1);
-    button(UpStep, L"Monter", 1); button(DownStep, L"Descendre", 1); button(DuplicateStep, L"Dupliquer", 1);
+    button(AddStep, L"Add", 1); button(UpdateStep, L"Apply", 1); button(DeleteStep, L"Delete", 1);
+    button(UpStep, L"Move up", 1); button(DownStep, L"Move down", 1); button(DuplicateStep, L"Duplicate", 1);
     for (int i = 0; i < 4; ++i) button(HotkeyClick + i, L"", 2);
-    button(ApplyHotkeys, L"Appliquer les raccourcis", 2); button(DefaultKeys, L"Valeurs par défaut", 2);
+    button(ApplyHotkeys, L"Apply shortcuts", 2); button(DefaultKeys, L"Restore defaults", 2);
+    button(CheckUpdates, L"Check for updates", 2);
     restorePreferences();
     restoreLibrary();
     shortcutRegistry = std::make_unique<HotkeyRegistry>(
@@ -214,13 +231,13 @@ void App::create() {
     shortcutRegistry->initialize(preferences.hotkeys);
     for (int i = 0; i < 4; ++i) hotkeys[i] = shortcutRegistry->active(i);
     if (std::any_of(std::begin(hotkeys), std::end(hotkeys), [](bool v) { return !v; })) {
-        notice = L"Un raccourci est déjà utilisé. Choisissez une autre combinaison dans Préférences.";
+        notice = L"A shortcut is already in use. Choose another combination in Preferences.";
         page = 2;
     }
     preferencesReady = true;
     SetTimer(hwnd, 1, 100, nullptr); layout(); editorState();
     if (dirty) SetTimer(hwnd, 3, 600, nullptr);
-    if (smoke) PostMessageW(hwnd, WM_APP + 1, 0, 0);
+    if (smoke) PostMessageW(hwnd, WM_APP + 1, 0, 0); else checkUpdates();
 }
 void App::layout() {
     if (arranging || widgets.empty()) return;
@@ -234,6 +251,7 @@ void App::layout() {
     };
     place(NavClick, 16, 148, 196, 48); place(NavMacro, 16, 204, 196, 48);
     place(NavSettings, 16, 260, 196, 48);
+    place(CheckUpdates, width - 252, height - 72, 220, 44);
     place(StartDelay, x + 158, height - 68, 86);
     place(Start, width - 374, height - 72, 184, 44); place(Stop, width - 178, height - 72, 146, 44);
     int cardW = (available * 3) / 5;
@@ -270,7 +288,7 @@ void App::layout() {
     place(DownStep, x + 430, editorY + 181, 38); place(DeleteStep, x + available - 132, editorY + 181, 112);
     for (int i = 0; i < 4; ++i) place(HotkeyClick + i, x + available - 300, 208 + i * 62, 270);
     place(ApplyHotkeys, x + 24, 478, 228, 42); place(DefaultKeys, x + 266, 478, 188, 42);
-    const std::wstring startLabel = page ? L"Exécuter" : L"Démarrer";
+    const std::wstring startLabel = page ? L"Run" : L"Start";
     if (value(Start) != startLabel) set(Start, startLabel);
     editorState(); if (selected() >= 0) ListView_EnsureVisible(control(StepList), selected(), FALSE);
     arranging = false;
@@ -281,13 +299,14 @@ void App::layout() {
 #include "key_capture.inl"
 #include "render_checks.inl"
 #include "library_ui.inl"
+#include "updater_ui.inl"
 std::wstring App::value(int id) const {
     int len = GetWindowTextLengthW(control(id)); std::wstring result(static_cast<size_t>(len) + 1, L'\0');
     GetWindowTextW(control(id), result.data(), len + 1); result.resize(len); return result;
 }
 bool App::number(int id, int lo, int hi, int& out, const wchar_t* name) {
     if (parseNumber(value(id), lo, hi, out)) return true;
-    error(std::wstring(name) + L" : entrez un entier entre " + std::to_wstring(lo) + L" et " + std::to_wstring(hi) + L".");
+    error(std::wstring(name) + L": enter a whole number between " + std::to_wstring(lo) + L" and " + std::to_wstring(hi) + L".");
     SetFocus(control(id)); SendMessageW(control(id), EM_SETSEL, 0, -1); return false;
 }
 void App::setDirty(bool v) {
@@ -307,7 +326,7 @@ void App::editorState() {
         bool visible = w.page < 0 || w.page == page, enabled = !active;
         switch (w.id) {
         case NavClick: case NavMacro: case NavSettings: enabled = true; break;
-        case Start: visible = page != 2; enabled &= (smoke || hotkeys[2]) && (page == 0 || (currentMacro() && !macro.steps.empty())); break;
+        case Start: visible = page != 2; enabled &= !downloadingUpdate && (smoke || hotkeys[2]) && (page == 0 || (currentMacro() && !macro.steps.empty())); break;
         case StartDelay: visible = page != 2; break;
         case Stop: visible = page != 2 || active; enabled = active; break;
         case ClickButton: case ClickPosition: visible = false; break;
@@ -321,6 +340,7 @@ void App::editorState() {
         case UpdateStep: case DeleteStep: case DuplicateStep: enabled &= sel >= 0; break;
         case UpStep: enabled &= sel > 0; break;
         case DownStep: enabled &= sel >= 0 && static_cast<size_t>(sel + 1) < macro.steps.size(); break;
+        case CheckUpdates: enabled = !updateTask.valid() && !downloadingUpdate; break;
         case NewMacro: enabled &= libraryWritable; break;
         case MacroName: case EditMacro: case CopyMacro: case RemoveMacro: enabled &= libraryWritable && currentMacro() != nullptr; break;
         case AddStep: enabled &= libraryWritable && currentMacro() != nullptr; break;
@@ -361,57 +381,58 @@ void App::populate() {
 bool App::readStep(Step& step) {
     step.action = static_cast<Action>(SendMessageW(control(StepType), CB_GETCURSEL, 0, 0));
     int delay = 0;
-    if (!number(StepDelay, 0, MaxDelayMs, delay, L"Délai")) return false;
+    if (!number(StepDelay, 0, MaxDelayMs, delay, L"Delay")) return false;
     step.delayMs = static_cast<uint32_t>(delay);
     step.button = static_cast<Button>(SendMessageW(control(StepButton), CB_GETCURSEL, 0, 0));
     step.fixed = step.action == Action::Move || SendMessageW(control(StepPosition), CB_GETCURSEL, 0, 0) == 1;
     if ((step.action == Action::Click || step.action == Action::Move) && step.fixed &&
         (!number(StepX, -100000, 100000, step.x, L"X") || !number(StepY, -100000, 100000, step.y, L"Y"))) return false;
     if (step.action == Action::Key || step.action == Action::KeyDown || step.action == Action::KeyUp)
-        if (!parseKey(value(StepKey), step.key, step.modifiers)) { error(L"Touche inconnue. Exemples : A, Enter, Ctrl+C, Shift+Tab."); return false; }
-    if (conflictsWithHotkeys(step, preferences.hotkeys)) { error(L"Cette touche est réservée à un de vos raccourcis. Modifiez-le dans Préférences pour utiliser cette touche dans une macro."); return false; }
-    if (step.action == Action::Scroll && !number(StepWheel, -100, 100, step.wheel, L"Molette")) return false;
+        if (!parseKey(value(StepKey), step.key, step.modifiers)) { error(L"Unknown key. Examples: A, Enter, Ctrl+C, Shift+Tab."); return false; }
+    if (conflictsWithHotkeys(step, preferences.hotkeys)) { error(L"This key is reserved for a shortcut. Change it in Preferences to use this key in a macro."); return false; }
+    if (step.action == Action::Scroll && !number(StepWheel, -100, 100, step.wheel, L"Scroll wheel")) return false;
     std::wstring err; if (!validStep(step, err)) { error(err); return false; } return true;
 }
 bool App::readRepeats() {
-    int repeats = 0; if (!number(RepeatCount, 0, 1000000, repeats, L"Répétitions")) return false;
+    int repeats = 0; if (!number(RepeatCount, 0, 1000000, repeats, L"Repetitions")) return false;
     macro.repeats = static_cast<uint32_t>(repeats); return true;
 }
 void App::start(int mode) {
+    if (downloadingUpdate || updateDialog) return;
     if (engine.snapshot().state != RunState::Idle) { stop(); return; }
-    if (!hotkeys[2]) { error(L"Le raccourci d'arrêt " + shortcutName(2) + L" est indisponible. Choisissez-en un autre dans Préférences."); return; }
-    int delay = 0; if (!number(StartDelay, 0, 60000, delay, L"Délai de départ")) return;
+    if (!hotkeys[2]) { error(L"The stop shortcut " + shortcutName(2) + L" is unavailable. Choose another one in Preferences."); return; }
+    int delay = 0; if (!number(StartDelay, 0, 60000, delay, L"Start delay")) return;
     std::wstring err; bool ok = false;
     if (mode == 0) {
         ClickConfig config; int interval = 0, count = 0;
-        if (!number(ClickInterval, 1, 60000, interval, L"Intervalle") || !number(ClickCount, 0, 1000000, count, L"Nombre de clics")) return;
+        if (!number(ClickInterval, 1, 60000, interval, L"Interval") || !number(ClickCount, 0, 1000000, count, L"Click count")) return;
         config.intervalMs = static_cast<uint32_t>(interval); config.count = static_cast<uint32_t>(count);
         config.button = static_cast<Button>(SendMessageW(control(ClickButton), CB_GETCURSEL, 0, 0));
         config.fixed = SendMessageW(control(ClickPosition), CB_GETCURSEL, 0, 0) == 1;
         if (config.fixed && (!number(ClickX, -100000, 100000, config.x, L"X") || !number(ClickY, -100000, 100000, config.y, L"Y"))) return;
         ok = engine.startClicker(config, static_cast<uint32_t>(delay), err);
     } else {
-        if (!currentMacro()) { notice = L"Créez une macro pour commencer."; return; }
+        if (!currentMacro()) { notice = L"Create a macro to get started."; return; }
         if (!readRepeats()) return;
         for (size_t i = 0; i < macro.steps.size(); ++i) if (conflictsWithHotkeys(macro.steps[i], preferences.hotkeys)) {
-            error(L"L'action " + std::to_wstring(i + 1) + L" utilise une touche réservée à vos raccourcis. Modifiez cette action ou vos raccourcis dans Préférences."); return;
+            error(L"Action " + std::to_wstring(i + 1) + L" uses a key reserved for a shortcut. Change this action or your shortcuts in Preferences."); return;
         }
         ok = engine.startMacro(macro, static_cast<uint32_t>(delay), err);
     }
     if (!ok) { error(err); return; }
     page = mode == 0 ? 0 : 1; failureShown = false; lastActive = true; layout(); schedulePreferences();
 }
-void App::stop() { engine.stop(); notice = L"Exécution arrêtée · " + std::to_wstring(engine.snapshot().actions) + L" actions."; tick(); }
+void App::stop() { engine.stop(); notice = L"Stopped · " + std::to_wstring(engine.snapshot().actions) + L" actions."; tick(); }
 void App::tick() {
     auto snapshot = engine.snapshot(); bool active = snapshot.state != RunState::Idle;
     bool repaint = active || lastActive || (snapshot.inputFailed && !failureShown);
     if (lastActive && !active) {
-        notice = L"Exécution terminée · " + std::to_wstring(snapshot.actions) + L" actions · " + std::to_wstring(snapshot.cycles) + L" boucles.";
+        notice = L"Finished · " + std::to_wstring(snapshot.actions) + L" actions · " + std::to_wstring(snapshot.cycles) + L" loops.";
         editorState();
     }
     lastActive = active;
     if (snapshot.inputFailed && !failureShown) {
-        failureShown = true; notice = L"Entrée refusée ou erreur du moteur. Vérifiez les droits de la fenêtre cible.";
+        failureShown = true; notice = L"Input was blocked or the engine failed. Check the target window's permissions.";
     }
     if (repaint) InvalidateRect(hwnd, nullptr, FALSE);
 }
@@ -421,11 +442,13 @@ void App::capture() {
     int xid = page ? StepX : ClickX, yid = page ? StepY : ClickY;
     set(xid, std::to_wstring(point.x)); set(yid, std::to_wstring(point.y));
     SendMessageW(control(page ? StepPosition : ClickPosition), CB_SETCURSEL, 1, 0);
-    notice = L"Position capturée : " + std::to_wstring(point.x) + L", " + std::to_wstring(point.y) + (page ? L". Ajoutez ou appliquez l'étape." : L".");
+    notice = L"Position captured: " + std::to_wstring(point.x) + L", " + std::to_wstring(point.y) + (page ? L". Add or apply the step." : L".");
     editorState(); InvalidateRect(hwnd, nullptr, FALSE); schedulePreferences();
 }
 void App::command(int id) {
-    if (keyCaptureTarget) endKeyCapture(L"Capture annulée.");
+    if (updateDialog) return;
+    if (id == CheckUpdates) { checkUpdates(true); return; }
+    if (keyCaptureTarget) endKeyCapture(L"Capture cancelled.");
     resumeShortcuts();
     if (shortcutsSuspended) return;
     if (id == StepKey || (id >= HotkeyClick && id <= HotkeyCapture)) { beginKeyCapture(id); return; }
@@ -440,7 +463,7 @@ void App::command(int id) {
     case ApplyHotkeys: applyHotkeyEdits(); break;
     case DefaultKeys:
         for (int i = 0; i < 4; ++i) set(HotkeyClick + i, keyName(DefaultHotkeys[i].key));
-        notice = L"Cliquez sur Appliquer pour rétablir les raccourcis par défaut."; break;
+        notice = L"Click Apply to restore the default shortcuts."; break;
     case MouseLeft: case MouseRight: case MouseMiddle:
         SendMessageW(control(ClickButton), CB_SETCURSEL, id - MouseLeft, 0);
         for (int key = MouseLeft; key <= MouseMiddle; ++key) InvalidateRect(control(key), nullptr, FALSE);
@@ -457,11 +480,11 @@ void App::command(int id) {
     case RemoveMacro: removeMacro(); break;
     case EditMacro: if (currentMacro()) { page = 1; layout(); schedulePreferences(); } break;
     case AddStep: case UpdateStep: {
-        if (id == AddStep && macro.steps.size() >= MaxSteps) { error(L"Limite de 10 000 étapes atteinte."); break; }
+        if (id == AddStep && macro.steps.size() >= MaxSteps) { error(L"The 10,000-step limit has been reached."); break; }
         Step step; if (!readStep(step)) break;
         if (id == AddStep) { macro.steps.push_back(step); sel = static_cast<int>(macro.steps.size() - 1); }
         else if (sel >= 0) macro.steps[sel] = step; else break;
-        setDirty(true); refreshList(sel); notice = L"Étape enregistrée dans la séquence."; break;
+        setDirty(true); refreshList(sel); notice = L"Step saved to the sequence."; break;
     }
     case DeleteStep:
         if (sel >= 0) { macro.steps.erase(macro.steps.begin() + sel); setDirty(true); refreshList(std::min(sel, static_cast<int>(macro.steps.size()) - 1)); } break;
@@ -524,7 +547,7 @@ void App::runSmoke() {
         }
         dirty = false; DestroyWindow(hwnd); return;
     }
-    check(widgets.size() == 50);
+    check(widgets.size() == 51);
     check(persistLibrary() && !dirty);
     for (const auto& w : widgets) check(IsWindow(w.hwnd) != FALSE);
     check(brandIcon != nullptr);
@@ -584,14 +607,14 @@ void App::runSmoke() {
     auto original = library.selected;
     command(BackLibrary); command(CopyMacro); SetFocus(control(NavMacro));
     check(library.entries.size() == 2 && macro.steps.size() == 2 && library.selected != original);
-    set(MacroName, L"Copie personnalisée"); command(EditMacro); set(StepKey, L"Alt+Q"); command(UpdateStep);
+    set(MacroName, L"Custom copy"); command(EditMacro); set(StepKey, L"Alt+Q"); command(UpdateStep);
     check(persistLibrary()); selectMacro(original); check(macro.steps[0].key == 'C' && macro.steps[1].key == 'V');
     selectMacro(library.entries[1].id); removeMacro(false); check(library.entries.size() == 1 && library.selected == original);
     command(NewMacro); check(textInput == control(MacroName) && !shortcutRegistry->active(0));
     MSG typed{}; typed.message = WM_KEYDOWN; typed.wParam = 'G'; check(!captureMessage(typed));
     message(WM_HOTKEY, 0x510, MAKELPARAM(0, VK_F6)); check(engine.snapshot().state == RunState::Idle);
     SetFocus(control(NavMacro)); check(!textInput && shortcutRegistry->active(0)); check(macro.steps.empty());
-    set(MacroName, L"Routine du soir"); check(persistLibrary()); command(BackLibrary); exportPreview(L"library.png");
+    set(MacroName, L"Evening routine"); check(persistLibrary()); command(BackLibrary); exportPreview(L"library.png");
     selectMacro(original); command(EditMacro);
     command(NavClick); check(IsWindowVisible(control(ClickInterval)) && !IsWindowVisible(control(StepList)));
     command(NavMacro); check(IsWindowVisible(control(LibraryList)) && !IsWindowVisible(control(ClickInterval))); command(EditMacro);
@@ -667,7 +690,7 @@ LRESULT App::message(UINT msg, WPARAM wp, LPARAM lp) {
         if (HIWORD(wp) == EN_KILLFOCUS) {
             if (LOWORD(wp) == MacroName && currentMacro() && cleanMacroName(value(MacroName)).empty()) {
                 refreshing = true; set(MacroName, macroName()); refreshing = false;
-                notice = L"Le nom doit contenir de 1 à 80 caractères.";
+                notice = L"The name must contain 1 to 80 characters.";
             }
             if (textInput == reinterpret_cast<HWND>(lp)) { textInput = nullptr; resumeShortcuts(); }
         }
@@ -678,12 +701,12 @@ LRESULT App::message(UINT msg, WPARAM wp, LPARAM lp) {
         if (nm->idFrom == StepList && nm->code == LVN_KEYDOWN && reinterpret_cast<NMLVKEYDOWN*>(lp)->wVKey == VK_DELETE) command(DeleteStep);
         if (nm->idFrom == StepList && nm->code == LVN_GETEMPTYMARKUP) {
             auto empty = reinterpret_cast<NMLVEMPTYMARKUP*>(lp); empty->dwFlags = EMF_CENTERED;
-            wcscpy_s(empty->szMarkup, L"Votre première macro commence ici\nChoisissez une action ci-dessous pour l'ajouter."); return TRUE;
+            wcscpy_s(empty->szMarkup, L"Your first macro starts here\nChoose an action below to add it."); return TRUE;
         }
         break;
     }
     case WM_HOTKEY: {
-        if (!shortcutRegistry || shortcutsSuspended) return 0;
+        if (!shortcutRegistry || shortcutsSuspended || updateDialog) return 0;
         int action = shortcutRegistry->actionFor(static_cast<int>(wp)); if (action < 0) return 0;
         const auto& key = preferences.hotkeys[action];
         if (HIWORD(lp) != key.key || static_cast<UINT>(LOWORD(lp) & (MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_WIN)) != nativeModifiers(key)) return 0; // Ignore stale queued bindings.
@@ -691,14 +714,14 @@ LRESULT App::message(UINT msg, WPARAM wp, LPARAM lp) {
         if (page == 2 && GetForegroundWindow() == hwnd) return 0; // Editing shortcuts must never start input.
         if (action == 0) start(0); else if (action == 1) start(1); else capture(); return 0;
     }
-    case WM_TIMER: if (wp == 2) persistPreferences(); else if (wp == 3) persistLibrary(); else { resumeShortcuts(); tick(); } return 0;
+    case WM_TIMER: if (wp == 2) persistPreferences(); else if (wp == 3) persistLibrary(); else { resumeShortcuts(); tick(); pollUpdates(); } return 0;
     case WM_ACTIVATEAPP:
-        if (!wp && keyCaptureTarget) endKeyCapture(L"Capture annulée.");
+        if (!wp && keyCaptureTarget) endKeyCapture(L"Capture cancelled.");
         if (!wp && textInput) { textInput = nullptr; resumeShortcuts(); }
         if (wp) { wchar_t klass[32]{}; GetClassNameW(GetFocus(), klass, 32); if (lstrcmpiW(klass, L"EDIT") == 0) beginTextInput(GetFocus()); }
         break;
     case WM_APP + 1: runSmoke(); return 0;
-    case WM_CLOSE: engine.stop(); if (persistLibrary()) { persistPreferences(); DestroyWindow(hwnd); } else { error(notice); tick(); } return 0;
+    case WM_CLOSE: if (updateDialog) return 0; engine.stop(); if (persistLibrary()) { persistPreferences(); DestroyWindow(hwnd); } else { error(notice); tick(); } return 0;
     case WM_QUERYENDSESSION: engine.stop(); persistPreferences(); return persistLibrary();
     case WM_DESTROY:
         engine.stop(); KillTimer(hwnd, 1); KillTimer(hwnd, 2); KillTimer(hwnd, 3); if (shortcutRegistry) shortcutRegistry->clear();
@@ -716,6 +739,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES}; InitCommonControlsEx(&icc);
     App app;
     int argc = 0; auto args = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (argc > 1 && std::wstring(args[1]) == L"--apply-update") {
+        int result = updates::runInstaller(argc, args); LocalFree(args); return result;
+    }
+    if (argc == 3 && std::wstring(args[1]) == L"--finish-update") updates::finishUpdate(args[2]);
     app.smoke = argc > 1 && std::wstring(args[1]) == L"--smoke-test";
     if (argc == 3 && (std::wstring(args[1]) == L"--session-write-test" || std::wstring(args[1]) == L"--session-read-test")) {
         app.smoke = true; app.sessionTest = std::wstring(args[1]) == L"--session-write-test" ? 1 : 2; app.sessionTestFile = args[2];
@@ -731,7 +758,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
         if (!instanceGuard.mutex || GetLastError() == ERROR_ALREADY_EXISTS) {
             auto existing = FindWindowW(L"MacroPulseWindow", nullptr);
             if (existing) { ShowWindow(existing, SW_RESTORE); SetForegroundWindow(existing); }
-            else MessageBoxW(nullptr, L"MacroPulse est déjà ouvert ou n'a pas pu démarrer.", L"MacroPulse", MB_OK);
+            else pulse::messageBox(nullptr, L"MacroPulse is already open or could not start.", L"MacroPulse", MB_OK);
             return 0;
         }
     }

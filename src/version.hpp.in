@@ -1,0 +1,2 @@
+#pragma once
+namespace pulse { inline constexpr wchar_t AppVersion[] = L"@PROJECT_VERSION@"; }

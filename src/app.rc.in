@@ -9,10 +9,10 @@
 BEGIN
  BLOCK "StringFileInfo"
  BEGIN
-  BLOCK "040C04B0"
+  BLOCK "040904B0"
   BEGIN
    VALUE "CompanyName", "MacroPulse"
-   VALUE "FileDescription", "MacroPulse - Auto-clicker et macros"
+   VALUE "FileDescription", "MacroPulse - Auto-clicker and macros"
    VALUE "FileVersion", "@PROJECT_VERSION@"
    VALUE "ProductVersion", "@PROJECT_VERSION@"
    VALUE "ProductName", "MacroPulse"
@@ -20,6 +20,6 @@ BEGIN
  END
  BLOCK "VarFileInfo"
  BEGIN
-  VALUE "Translation", 0x40c, 1200
+  VALUE "Translation", 0x409, 1200
  END
 END

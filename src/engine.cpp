@@ -20,8 +20,8 @@ void Engine::stop() {
     state_ = RunState::Idle;
 }
 bool Engine::prepare(uint32_t delayMs, std::wstring& error) {
-    if (!stopEvent_ || !timer_ || !frequency_) { error = L"Le moteur de temporisation Windows n'est pas disponible."; return false; }
-    if (delayMs > 60000) { error = L"Le délai de départ est limité à 60 000 ms."; return false; }
+    if (!stopEvent_ || !timer_ || !frequency_) { error = L"The Windows timing engine is unavailable."; return false; }
+    if (delayMs > 60000) { error = L"Start delay is limited to 60,000 ms."; return false; }
     stop(); ResetEvent(stopEvent_);
     actions_ = 0; cycles_ = 0; step_ = 0; failed_ = false; ended_ = 0; started_ = now();
     held_.fill(false); mouseHeld_.fill(false);
@@ -128,7 +128,7 @@ bool Engine::startClicker(ClickConfig config, uint32_t delay, std::wstring& erro
     if (!config.intervalMs || config.intervalMs > 60000 || config.count > 1000000 ||
         config.button < Button::Left || config.button > Button::Middle ||
         config.x < -100000 || config.x > 100000 || config.y < -100000 || config.y > 100000) {
-        error = L"Intervalle : 1 à 60 000 ms. Nombre de clics : 0 à 1 000 000. Coordonnées : -100 000 à 100 000."; return false;
+        error = L"Interval: 1 to 60,000 ms. Click count: 0 to 1,000,000. Coordinates: -100,000 to 100,000."; return false;
     }
     if (!prepare(delay, error)) return false;
     try { worker_ = std::thread([this, config, delay] {
@@ -145,7 +145,7 @@ bool Engine::startClicker(ClickConfig config, uint32_t delay, std::wstring& erro
             if (deadline < time) deadline += ((time - deadline) / ticks(config.intervalMs) + 1) * ticks(config.intervalMs);
         }
         finish();
-    }); } catch (const std::exception&) { state_ = RunState::Idle; error = L"Impossible de démarrer le moteur."; return false; }
+    }); } catch (const std::exception&) { state_ = RunState::Idle; error = L"Could not start the engine."; return false; }
     return true;
 }
 bool Engine::startMacro(Macro macro, uint32_t delay, std::wstring& error) {
@@ -166,7 +166,7 @@ bool Engine::startMacro(Macro macro, uint32_t delay, std::wstring& error) {
             ++cycles_;
         }
         finish();
-    }); } catch (const std::exception&) { state_ = RunState::Idle; error = L"Impossible de démarrer le moteur."; return false; }
+    }); } catch (const std::exception&) { state_ = RunState::Idle; error = L"Could not start the engine."; return false; }
     return true;
 }
 Snapshot Engine::snapshot() const {

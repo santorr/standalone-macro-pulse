@@ -13,8 +13,8 @@ static bool validHotkey(const Hotkey& key) {
 }
 bool validHotkeys(const Hotkeys& keys, std::wstring& error) {
     for (size_t i = 0; i < keys.size(); ++i) {
-        if (!validHotkey(keys[i])) { error = L"Choisissez une touche seule ou avec Ctrl, Alt ou Shift. F12, Alt+F4 et les combinaisons Windows sont réservés."; return false; }
-        for (size_t j = 0; j < i; ++j) if (keys[i] == keys[j]) { error = L"Chaque action doit avoir un raccourci différent."; return false; }
+        if (!validHotkey(keys[i])) { error = L"Choose a key on its own or with Ctrl, Alt or Shift. F12, Alt+F4 and Windows key combinations are reserved."; return false; }
+        for (size_t j = 0; j < i; ++j) if (keys[i] == keys[j]) { error = L"Each action must have a different shortcut."; return false; }
     }
     return true;
 }
@@ -36,7 +36,7 @@ bool validPreferences(const Preferences& p, std::wstring& error) {
     if (!p.click.intervalMs || p.click.intervalMs > 60000 || p.click.count > 1000000 || p.startDelayMs > 60000 ||
         p.click.button < Button::Left || p.click.button > Button::Middle || p.click.x < -100000 || p.click.x > 100000 ||
         p.click.y < -100000 || p.click.y > 100000 || p.page < 0 || p.page > 3 || p.lastMacro.native().size() > 32767) {
-        error = L"Réglages invalides."; return false;
+        error = L"Invalid settings."; return false;
     }
     return validHotkeys(p.hotkeys, error);
 }
@@ -48,7 +48,7 @@ std::filesystem::path preferencesPath() {
 }
 bool savePreferences(const std::filesystem::path& file, const Preferences& p, std::wstring& error) {
     if (!validPreferences(p, error)) return false;
-    if (file.empty()) { error = L"Le dossier de vos réglages est inaccessible."; return false; }
+    if (file.empty()) { error = L"Your settings folder is inaccessible."; return false; }
     std::error_code ec;
     if (!file.parent_path().empty()) std::filesystem::create_directories(file.parent_path(), ec);
     auto temp = file; temp += L".tmp-" + std::to_wstring(GetCurrentProcessId());
@@ -60,11 +60,11 @@ bool savePreferences(const std::filesystem::path& file, const Preferences& p, st
     out << std::quoted(std::string(utf8.begin(), utf8.end())) << '\n';
     out.flush(); bool ok = out.good(); out.close(); ok = ok && !out.fail();
     if (ok && MoveFileExW(temp.c_str(), file.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
-    std::filesystem::remove(temp, ec); error = L"Impossible de mémoriser les réglages. Vérifiez l'accès au dossier MacroPulse."; return false;
+    std::filesystem::remove(temp, ec); error = L"Could not save settings. Check access to the MacroPulse folder."; return false;
 }
 bool loadPreferences(const std::filesystem::path& file, Preferences& settings, std::wstring& error) {
     std::error_code ec;
-    auto fail = [&]() { error = L"Les réglages enregistrés sont illisibles. Les valeurs par défaut sont utilisées."; return false; };
+    auto fail = [&]() { error = L"Saved settings could not be read. Default values are being used."; return false; };
     if (std::filesystem::file_size(file, ec) > 131072 || ec) return fail();
     std::ifstream in(file, std::ios::binary); std::string magic, macroPath;
     long long version, interval, count, button, fixed, x, y, delay, page;

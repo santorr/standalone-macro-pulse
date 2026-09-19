@@ -10,7 +10,7 @@ void App::beginKeyCapture(int id) {
     keyCaptureTarget = id; shortcutsSuspended = true; loneModifier = 0; captureHeld.fill(false);
     if (!smoke) for (int key : {VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN}) captureHeld[key] = (GetAsyncKeyState(key) & 0x8000) != 0;
     shortcutRegistry->clear();
-    notice = id == StepKey ? L"Appuyez sur vos touches · Cliquez ailleurs pour annuler." : L"Appuyez sur vos touches · Échap pour annuler.";
+    notice = id == StepKey ? L"Press your keys · Click elsewhere to cancel." : L"Press your keys · Esc to cancel.";
     InvalidateRect(control(id), nullptr, FALSE); InvalidateRect(hwnd, nullptr, FALSE);
 }
 void App::endKeyCapture(const std::wstring& message) {
@@ -28,7 +28,7 @@ void App::resumeShortcuts() {
     shortcutRegistry->initialize(preferences.hotkeys); shortcutsSuspended = false;
     for (int i = 0; i < 4; ++i) hotkeys[i] = shortcutRegistry->active(i);
     if (std::any_of(std::begin(hotkeys), std::end(hotkeys), [](bool active) { return !active; }))
-        notice = L"Un raccourci est devenu indisponible. Choisissez-en un autre dans Préférences.";
+        notice = L"A shortcut is no longer available. Choose another one in Preferences.";
     editorState(); InvalidateRect(hwnd, nullptr, FALSE);
 }
 void App::acceptCapturedKey(uint16_t key, uint8_t modifiers) {
@@ -41,11 +41,11 @@ void App::acceptCapturedKey(uint16_t key, uint8_t modifiers) {
         if (!valid) notice = problem;
     } else {
         Hotkey candidate; valid = parseHotkey(name, candidate);
-        if (!valid) notice = L"Touche réservée ou non prise en charge. Essayez une autre touche · Échap pour annuler.";
+        if (!valid) notice = L"Reserved or unsupported key. Try another key · Esc to cancel.";
     }
     if (!valid) { loneModifier = 0; InvalidateRect(hwnd, nullptr, FALSE); return; }
     set(keyCaptureTarget, name);
-    endKeyCapture(keyCaptureTarget == StepKey ? L"Touche capturée. Ajoutez ou appliquez l'étape." : L"Touche capturée. Cliquez sur Appliquer les raccourcis pour enregistrer.");
+    endKeyCapture(keyCaptureTarget == StepKey ? L"Key captured. Add or apply the step." : L"Key captured. Click Apply shortcuts to save.");
 }
 bool App::captureMessage(const MSG& message) {
     // This runs before IsDialogMessage, which consumes Tab and arrow navigation.
@@ -62,7 +62,7 @@ bool App::captureMessage(const MSG& message) {
     const auto msg = message.message;
     if (keyCaptureTarget && message.hwnd != control(keyCaptureTarget) &&
         (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN || msg == WM_NCLBUTTONDOWN)) {
-        endKeyCapture(L"Capture annulée."); resumeShortcuts(); return false;
+        endKeyCapture(L"Capture cancelled."); resumeShortcuts(); return false;
     }
     bool down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
     bool up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
@@ -72,7 +72,7 @@ bool App::captureMessage(const MSG& message) {
     bool repeated = down && (captureHeld[key] || (message.lParam & (1LL << 30)));
     captureHeld[key] = down;
     if (!keyCaptureTarget) { resumeShortcuts(); return true; }
-    if (key == VK_ESCAPE && keyCaptureTarget != StepKey) { if (down) endKeyCapture(L"Capture annulée."); return true; }
+    if (key == VK_ESCAPE && keyCaptureTarget != StepKey) { if (down) endKeyCapture(L"Capture cancelled."); return true; }
     auto isHeld = [&](int generic, int left, int right) { return captureHeld[generic] || captureHeld[left] || captureHeld[right]; };
     uint8_t mods = (isHeld(VK_CONTROL, VK_LCONTROL, VK_RCONTROL) ? 1 : 0) |
         (isHeld(VK_MENU, VK_LMENU, VK_RMENU) ? 2 : 0) | (isHeld(VK_SHIFT, VK_LSHIFT, VK_RSHIFT) ? 4 : 0) |
@@ -99,7 +99,7 @@ std::wstring App::bindingLabel(int id) const {
         if (captureHeld[VK_MENU] || captureHeld[VK_LMENU] || captureHeld[VK_RMENU]) label += L"Alt + ";
         if (captureHeld[VK_SHIFT] || captureHeld[VK_LSHIFT] || captureHeld[VK_RSHIFT]) label += L"Shift + ";
         if (captureHeld[VK_LWIN] || captureHeld[VK_RWIN]) label += L"Win + ";
-        return label.empty() ? L"Appuyez sur une touche…" : label + L"…";
+        return label.empty() ? L"Press a key…" : label + L"…";
     }
     auto label = value(id); uint16_t key; uint8_t mods;
     if (parseKey(label, key, mods) && key >= VK_OEM_1 && key <= VK_OEM_102) {

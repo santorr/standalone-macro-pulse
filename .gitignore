@@ -38,3 +38,4 @@ library.dat
 Thumbs.db
 Desktop.ini
 .DS_Store
+*.exe.previous

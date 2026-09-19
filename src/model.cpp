@@ -88,40 +88,40 @@ bool validStep(const Step& s, std::wstring& error) {
     if (s.action < Action::Click || s.action > Action::Scroll || s.button < Button::Left || s.button > Button::Middle ||
         s.delayMs > MaxDelayMs || s.x < -100000 || s.x > 100000 || s.y < -100000 || s.y > 100000 ||
         s.modifiers > 15 || s.wheel < -100 || s.wheel > 100 || (s.action == Action::Scroll && s.wheel == 0)) {
-        error = L"Une étape contient une valeur hors limites."; return false;
+        error = L"A step contains an out-of-range value."; return false;
     }
     if (s.action == Action::Key || s.action == Action::KeyDown || s.action == Action::KeyUp) {
         uint16_t key = 0; uint8_t mods = 0;
         if (!parseKey(keyName(s.key, s.modifiers), key, mods) || key != s.key || mods != s.modifiers) {
-            error = L"Touche inconnue."; return false;
+            error = L"Unknown key."; return false;
         }
-        if (s.action != Action::Key && s.modifiers) { error = L"Appuyer / relâcher attend une touche seule."; return false; }
+        if (s.action != Action::Key && s.modifiers) { error = L"Key down / key up requires a single key."; return false; }
     }
     return true;
 }
 bool validMacro(const Macro& macro, std::wstring& error) {
     if (macro.steps.empty() || macro.steps.size() > MaxSteps || macro.repeats > 1000000) {
-        error = L"Une macro doit contenir 1 à 10 000 étapes et 0 à 1 000 000 répétitions."; return false;
+        error = L"A macro must contain 1 to 10,000 steps and 0 to 1,000,000 repetitions."; return false;
     }
     uint64_t duration = 0;
     for (const auto& step : macro.steps) { if (!validStep(step, error)) return false; duration += step.delayMs; }
-    if (!macro.repeats && !duration) { error = L"Une boucle infinie doit contenir au moins 1 ms d'attente."; return false; }
+    if (!macro.repeats && !duration) { error = L"An infinite loop must contain at least 1 ms of delay."; return false; }
     return true;
 }
 std::wstring actionName(Action a) {
-    const wchar_t* names[] = {L"Clic souris", L"Déplacement", L"Touche / raccourci", L"Appuyer touche", L"Relâcher touche", L"Pause", L"Molette"};
+    const wchar_t* names[] = {L"Mouse click", L"Mouse movement", L"Key / shortcut", L"Key down", L"Key up", L"Pause", L"Scroll wheel"};
     return names[static_cast<int>(a)];
 }
 std::wstring describe(const Step& s) {
     switch (s.action) {
     case Action::Click: {
-        const wchar_t* b[] = {L"Gauche", L"Droit", L"Milieu"};
-        return std::wstring(b[static_cast<int>(s.button)]) + (s.fixed ? L" · (" + std::to_wstring(s.x) + L", " + std::to_wstring(s.y) + L")" : L" · position actuelle");
+        const wchar_t* b[] = {L"Left", L"Right", L"Middle"};
+        return std::wstring(b[static_cast<int>(s.button)]) + (s.fixed ? L" · (" + std::to_wstring(s.x) + L", " + std::to_wstring(s.y) + L")" : L" · current position");
     }
     case Action::Move: return L"X " + std::to_wstring(s.x) + L"   Y " + std::to_wstring(s.y);
     case Action::Key: case Action::KeyDown: case Action::KeyUp: return keyName(s.key, s.modifiers);
-    case Action::Wait: return L"Attendre " + std::to_wstring(s.delayMs) + L" ms";
-    case Action::Scroll: return std::to_wstring(s.wheel) + L" cran(s)";
+    case Action::Wait: return L"Wait " + std::to_wstring(s.delayMs) + L" ms";
+    case Action::Scroll: return std::to_wstring(s.wheel) + L" notch(es)";
     }
     return {};
 }
@@ -137,14 +137,14 @@ bool saveMacro(const std::filesystem::path& path, const Macro& macro, std::wstri
     bool ok = file.good(); file.close(); ok = ok && !file.fail();
     if (ok && MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
     std::error_code ec; std::filesystem::remove(temp, ec);
-    error = L"Impossible d'enregistrer ce fichier. Vérifiez le dossier et les droits d'accès."; return false;
+    error = L"Could not save this file. Check the folder and its permissions."; return false;
 }
 bool loadMacro(const std::filesystem::path& path, Macro& macro, std::wstring& error) {
     std::error_code ec;
-    if (std::filesystem::file_size(path, ec) > 4 * 1024 * 1024 || ec) { error = L"Fichier inaccessible ou trop volumineux (4 Mo maximum)."; return false; }
+    if (std::filesystem::file_size(path, ec) > 4 * 1024 * 1024 || ec) { error = L"File is inaccessible or too large (4 MB maximum)."; return false; }
     std::ifstream file(path, std::ios::binary);
     std::string magic; int version; long long repeats, count;
-    auto fail = [&]() { error = L"Fichier MacroPulse invalide ou version non prise en charge."; return false; };
+    auto fail = [&]() { error = L"Invalid MacroPulse file or unsupported version."; return false; };
     if (!(file >> magic >> version >> repeats >> count) || magic != "MACROPULSE" || version != 1 || repeats < 0 || repeats > 1000000 || count < 1 || count > static_cast<long long>(MaxSteps)) return fail();
     Macro candidate; candidate.repeats = static_cast<uint32_t>(repeats);
     for (long long i = 0; i < count; ++i) {

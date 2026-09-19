@@ -7,11 +7,11 @@ $buildDir = Join-Path $projectRoot $BuildDirectory
 $outputDir = Join-Path $projectRoot $OutputDirectory
 $executable = Join-Path $buildDir 'Release/MacroPulse.exe'
 if (!(Test-Path -LiteralPath $executable -PathType Leaf)) {
-    throw 'Compilez et testez la configuration Release avec scripts/build.ps1 avant de créer le package.'
+    throw 'Build and test the Release configuration with scripts/build.ps1 before packaging.'
 }
 $metadata = (Get-Item -LiteralPath $executable).VersionInfo
 if ($metadata.FileVersion -ne $version -or $metadata.ProductVersion -ne $version) {
-    throw "La version de l'exécutable ne correspond pas à VERSION ($version). Recompilez le projet."
+    throw "The executable version does not match VERSION ($version). Rebuild the project."
 }
 $baseName = "MacroPulse-$version-windows-x64"
 $stage = Join-Path $buildDir ("package-" + [guid]::NewGuid().ToString('N'))
@@ -28,4 +28,4 @@ $checksums = foreach ($file in @($exePath, $zipPath)) {
     "$hash  $([IO.Path]::GetFileName($file))"
 }
 $checksums | Set-Content -LiteralPath (Join-Path $outputDir 'SHA256SUMS.txt') -Encoding utf8NoBOM
-Write-Output "Packages $version créés dans $outputDir"
+Write-Output "Packages $version created in $outputDir"

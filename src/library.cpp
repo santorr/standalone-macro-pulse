@@ -19,7 +19,7 @@ static std::string utf8(const std::wstring& text) {
     return result;
 }
 bool validLibrary(const Library& library, std::wstring& error) {
-    auto fail = [&]() { error = L"La bibliothèque contient des données invalides."; return false; };
+    auto fail = [&]() { error = L"The library contains invalid data."; return false; };
     if (library.entries.size() > MaxMacros) return fail();
     std::set<uint64_t> ids; size_t total = 0;
     for (const auto& entry : library.entries) {
@@ -33,14 +33,14 @@ bool validLibrary(const Library& library, std::wstring& error) {
     return true;
 }
 bool addLibraryMacro(Library& library, const std::wstring& name, const Macro& macro, std::wstring& error) {
-    if (library.entries.size() >= MaxMacros) { error = L"Votre bibliothèque a atteint 1 000 macros."; return false; }
+    if (library.entries.size() >= MaxMacros) { error = L"Your library has reached the 1,000-macro limit."; return false; }
     uint64_t id = 1; for (const auto& entry : library.entries) id = std::max(id, entry.id + 1);
     Library candidate = library; candidate.entries.push_back({id, cleanMacroName(name), macro}); candidate.selected = id;
     if (!validLibrary(candidate, error)) return false;
     library = std::move(candidate); return true;
 }
 bool loadLibrary(const std::filesystem::path& file, Library& library, std::wstring& error) {
-    auto fail = [&]() { error = L"Impossible de lire votre bibliothèque. Vos données ont été conservées."; return false; };
+    auto fail = [&]() { error = L"Could not read your library. Your data has been preserved."; return false; };
     std::error_code ec;
     if (std::filesystem::file_size(file, ec) > 64 * 1024 * 1024 || ec) return fail();
     std::ifstream in(file, std::ios::binary); std::string magic; long long version, selected, count;
@@ -68,7 +68,7 @@ bool loadLibrary(const std::filesystem::path& file, Library& library, std::wstri
 }
 bool saveLibrary(const std::filesystem::path& file, const Library& library, std::wstring& error) {
     if (!validLibrary(library, error)) return false;
-    auto fail = [&]() { error = L"Vos modifications ne sont pas encore sauvegardées. Vérifiez l'espace disponible, puis réessayez."; return false; };
+    auto fail = [&]() { error = L"Your changes have not been saved yet. Check available disk space and folder permissions, then try again."; return false; };
     if (file.empty()) return fail();
     std::error_code ec; if (!file.parent_path().empty()) std::filesystem::create_directories(file.parent_path(), ec);
     auto temp = file; temp += L".tmp-" + std::to_wstring(GetCurrentProcessId());
