@@ -67,7 +67,13 @@ In **Preferences**, click a shortcut and press a key or combination, then click 
 
 Letters, numbers, function keys, navigation keys and numpad keys work alone or with Ctrl/Alt/Shift. Punctuation follows the active keyboard layout. F12, Alt+F4, Windows key combinations and modifier-only shortcuts are reserved. Duplicate shortcuts are rejected. If a shortcut conflicts with another application, the previous shortcuts stay active. An unavailable stop shortcut disables execution until it is reconfigured.
 
-Shortcuts are suspended while capturing a combination or typing in an input field, then restored after the keys are released. Start shortcuts do not execute actions while Preferences is in the foreground. Stop remains available.
+Shortcuts are suspended while capturing a combination or typing in MacroPulse, then restored after the keys are released. Start shortcuts do not execute actions while Preferences is in the foreground.
+
+Since **1.5.1**, start and position-capture shortcuts are also temporarily **unregistered** when an editable field is detected in another application. For example, `G` assigned to the auto-clicker can be typed into a supported text field without starting it. The global stop shortcut (F8 by default) stays registered, including during an active macro. Leaving the field restores the shortcuts only after held keys have been released. A shortcut claimed by another app during that pause is reported as unavailable rather than silently assumed to work.
+
+Detection uses native Windows focus events and UI Automation on a background thread. It checks control type and editability, including password fields, **without reading field contents, names, values or typed characters**. Launch shortcuts are also paused briefly while a new focus is being classified. This does not pause an already running macro or clicker; use the stop shortcut to stop it.
+
+This is best-effort detection, not a guarantee for every app: games, custom-rendered chats and controls that do not expose accessibility information may remain undetectable. Focus notification latency is also possible. For those applications, use a function key such as F6 instead of a bare letter. Keep the stop shortcut on a non-text key such as F8, since it intentionally remains active while typing.
 
 Settings are saved to `%LOCALAPPDATA%\MacroPulse\settings.dat`. Macros are stored in the adjacent `library.dat`. Names, repetitions, sequence edits and selection are saved automatically after 600 ms, on navigation and on close. Empty drafts are retained. Your library and selected macro return at startup without running automatically. Existing macro names, including names in French or other languages, are preserved.
 
@@ -95,7 +101,7 @@ cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure --no-tests=error
 ```
 
-The seven CTest suites cover the model, timing engine, shortcut conflicts, storage recovery, library migration, session persistence, real UI controls, keyboard capture and the updater. Updater tests reject malformed metadata, wrong repositories, invalid versions, corrupted downloads and incompatible executables. An isolated test host exercises the actual helper handoff, file replacement, backup and restart; it does not replace a user's application. CI tests make no network requests or synthetic mouse/keyboard inputs.
+The eight CTest suites cover the model, timing engine, shortcut conflicts, storage recovery, library migration, session persistence, real UI controls, keyboard capture, the updater and external typing protection. Focus tests exercise actual native/UI Automation controls, real shortcut unregister/register behavior, emergency-stop preservation, conflicts on resume and held-key deferral. Updater tests reject malformed metadata, wrong repositories, invalid versions, corrupted downloads and incompatible executables. An isolated test host exercises the actual helper handoff, file replacement, backup and restart; it does not replace a user's application. CI tests make no network requests or synthetic mouse/keyboard inputs.
 
 ```powershell
 .\build\Release\MacroPulse.exe --render-preview artifacts
@@ -119,12 +125,12 @@ To publish a future fix, update `VERSION` and `CHANGELOG.md`, commit/push to `ma
 ```powershell
 git switch main
 git pull --ff-only
-# VERSION and CHANGELOG.md must already be committed for 1.5.1.
-git tag -a v1.5.1 -m "MacroPulse 1.5.1"
-git push origin v1.5.1
+# VERSION and CHANGELOG.md must already be committed for 1.5.2.
+git tag -a v1.5.2 -m "MacroPulse 1.5.2"
+git push origin v1.5.2
 ```
 
-Assets are `MacroPulse-1.5.1-windows-x64.exe`, `MacroPulse-1.5.1-windows-x64.zip` and `SHA256SUMS.txt`. Keep this filename convention and the GitHub asset digest: the updater relies on them. GitHub supplies source archives automatically.
+Assets are `MacroPulse-1.5.2-windows-x64.exe`, `MacroPulse-1.5.2-windows-x64.zip` and `SHA256SUMS.txt`. Keep this filename convention and the GitHub asset digest: the updater relies on them. GitHub supplies source archives automatically.
 
 To create packages locally after a successful Release build:
 
@@ -139,6 +145,7 @@ Do not move published tags or overwrite releases. Publish a new version for fixe
 - `engine.*`: dedicated worker thread, `SendInput`, `QueryPerformanceCounter` and a high-resolution waitable timer, with a standard timer fallback. Stop interrupts waits immediately; missed clicks are skipped rather than replayed in a burst.
 - `model.*`, `preferences.*`, `library.*`: validation, storage and transactional shortcut configuration.
 - `main.cpp` and the `.inl` UI files: native Win32 controls, DPI scaling, dark rendering and global shortcuts. Statistics refresh at 10 Hz during execution; there is no continuous repaint while idle.
+- `text_focus.*`: event-driven focus tracking and background UI Automation queries; temporarily releases launch/capture shortcuts while keeping emergency stop registered.
 - `updater.*`: bounded HTTPS requests, numeric version comparison, SHA-256 verification and an isolated replacement helper. `updater_ui.inl` handles consent and background tasks.
 
 There is no global keyboard/mouse hook, telemetry, driver or global timer-resolution change. The updater is the only network feature.

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5.1
+
+- Release start and position-capture shortcuts while typing in supported external text fields. A bare letter such as G is no longer reserved by MacroPulse in those fields.
+- Detect native edit controls, password fields and accessible editors through Windows focus events and background UI Automation, without reading text contents.
+- Keep emergency stop registered, defer reactivation until held keys are released, and report conflicts acquired by other apps during the pause.
+- Add tests with real Windows controls and shortcut registration, plus held-key regression coverage in the UI smoke test.
+- Document the limits for games and custom controls without accessibility support.
+
 ## 1.5.0
 
 - Translate all application controls, notifications, validation errors and Windows metadata into English. Preserve existing macro names and data.

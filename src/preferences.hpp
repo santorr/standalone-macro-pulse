@@ -40,6 +40,8 @@ public:
     bool active(size_t index) const { return registrations_[index].id != 0; }
     int actionFor(int id) const;
     void clear();
+    void suspendLaunchShortcuts();
+    void resumeMissing(const Hotkeys& keys);
 private:
     struct Binding { int id = 0; Hotkey key; };
     std::array<Binding, 4> registrations_{};

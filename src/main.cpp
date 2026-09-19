@@ -1,6 +1,7 @@
 #include "dialogs.hpp"
 #include "engine.hpp"
 #include "preferences.hpp"
+#include "text_focus.hpp"
 #include "library.hpp"
 #include "theme.hpp"
 #include "updater.hpp"
@@ -82,6 +83,10 @@ private:
     bool arranging = false;
     bool keyboardNavigation = false;
     std::unique_ptr<HotkeyRegistry> shortcutRegistry;
+    std::unique_ptr<TextFocusMonitor> textFocus;
+    bool externalShortcutsPaused = false;
+    void updateTypingProtection();
+    void applyTypingProtection(bool pause);
     int keyCaptureTarget = 0;
     bool shortcutsSuspended = false;
     HWND textInput = nullptr;
@@ -234,6 +239,7 @@ void App::create() {
         notice = L"A shortcut is already in use. Choose another combination in Preferences.";
         page = 2;
     }
+    if (!smoke) textFocus = std::make_unique<TextFocusMonitor>(hwnd);
     preferencesReady = true;
     SetTimer(hwnd, 1, 100, nullptr); layout(); editorState();
     if (dirty) SetTimer(hwnd, 3, 600, nullptr);
@@ -398,6 +404,8 @@ bool App::readRepeats() {
     macro.repeats = static_cast<uint32_t>(repeats); return true;
 }
 void App::start(int mode) {
+    updateTypingProtection();
+    if (externalShortcutsPaused) return;
     if (downloadingUpdate || updateDialog) return;
     if (engine.snapshot().state != RunState::Idle) { stop(); return; }
     if (!hotkeys[2]) { error(L"The stop shortcut " + shortcutName(2) + L" is unavailable. Choose another one in Preferences."); return; }
@@ -548,6 +556,12 @@ void App::runSmoke() {
         dirty = false; DestroyWindow(hwnd); return;
     }
     check(widgets.size() == 51);
+    applyTypingProtection(true);
+    check(externalShortcutsPaused && !shortcutRegistry->active(0) && !shortcutRegistry->active(1) && shortcutRegistry->active(2) && !shortcutRegistry->active(3));
+    captureHeld['G'] = true; applyTypingProtection(false);
+    check(externalShortcutsPaused && !shortcutRegistry->active(0) && shortcutRegistry->active(2));
+    captureHeld['G'] = false; applyTypingProtection(false);
+    check(!externalShortcutsPaused && shortcutRegistry->active(0) && shortcutRegistry->active(2));
     check(persistLibrary() && !dirty);
     for (const auto& w : widgets) check(IsWindow(w.hwnd) != FALSE);
     check(brandIcon != nullptr);
@@ -711,19 +725,22 @@ LRESULT App::message(UINT msg, WPARAM wp, LPARAM lp) {
         const auto& key = preferences.hotkeys[action];
         if (HIWORD(lp) != key.key || static_cast<UINT>(LOWORD(lp) & (MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_WIN)) != nativeModifiers(key)) return 0; // Ignore stale queued bindings.
         if (action == 2) { stop(); return 0; }
+        updateTypingProtection(); if (externalShortcutsPaused) return 0;
         if (page == 2 && GetForegroundWindow() == hwnd) return 0; // Editing shortcuts must never start input.
         if (action == 0) start(0); else if (action == 1) start(1); else capture(); return 0;
     }
-    case WM_TIMER: if (wp == 2) persistPreferences(); else if (wp == 3) persistLibrary(); else { resumeShortcuts(); tick(); pollUpdates(); } return 0;
+    case WM_TIMER: if (wp == 2) persistPreferences(); else if (wp == 3) persistLibrary(); else { updateTypingProtection(); resumeShortcuts(); tick(); pollUpdates(); } return 0;
     case WM_ACTIVATEAPP:
         if (!wp && keyCaptureTarget) endKeyCapture(L"Capture cancelled.");
         if (!wp && textInput) { textInput = nullptr; resumeShortcuts(); }
         if (wp) { wchar_t klass[32]{}; GetClassNameW(GetFocus(), klass, 32); if (lstrcmpiW(klass, L"EDIT") == 0) beginTextInput(GetFocus()); }
         break;
+    case TextFocusMonitor::ChangedMessage: updateTypingProtection(); return 0;
     case WM_APP + 1: runSmoke(); return 0;
     case WM_CLOSE: if (updateDialog) return 0; engine.stop(); if (persistLibrary()) { persistPreferences(); DestroyWindow(hwnd); } else { error(notice); tick(); } return 0;
     case WM_QUERYENDSESSION: engine.stop(); persistPreferences(); return persistLibrary();
     case WM_DESTROY:
+        textFocus.reset();
         engine.stop(); KillTimer(hwnd, 1); KillTimer(hwnd, 2); KillTimer(hwnd, 3); if (shortcutRegistry) shortcutRegistry->clear();
         PostQuitMessage(smokeExit); return 0;
     }

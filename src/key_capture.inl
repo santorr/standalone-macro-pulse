@@ -1,3 +1,30 @@
+void App::updateTypingProtection() {
+    applyTypingProtection(textFocus && textFocus->pauseLaunchShortcuts());
+}
+void App::applyTypingProtection(bool pause) {
+    if (!shortcutRegistry) return;
+    if (pause) {
+        // Ignoring WM_HOTKEY is not enough: Windows still eats the character.
+        // Keep the stop binding registered throughout this transition.
+        shortcutRegistry->suspendLaunchShortcuts(); externalShortcutsPaused = true;
+        return;
+    }
+    if (!externalShortcutsPaused || shortcutsSuspended || keyCaptureTarget || textInput) return;
+    if (smoke) {
+        if (std::any_of(captureHeld.begin(), captureHeld.end(), [](bool down) { return down; })) return;
+    } else {
+        for (int key = VK_BACK; key < 256; ++key) if (GetAsyncKeyState(key) & 0x8000) return;
+    }
+    // Never rebind a key while it is held as the user leaves a text field.
+    MSG queued{}; while (PeekMessageW(&queued, hwnd, WM_HOTKEY, WM_HOTKEY, PM_REMOVE)) {
+        if (shortcutRegistry->actionFor(static_cast<int>(queued.wParam)) == 2) stop();
+    }
+    shortcutRegistry->resumeMissing(preferences.hotkeys); externalShortcutsPaused = false;
+    for (int i = 0; i < 4; ++i) hotkeys[i] = shortcutRegistry->active(i);
+    if (std::any_of(std::begin(hotkeys), std::end(hotkeys), [](bool active) { return !active; }))
+        notice = L"A shortcut is no longer available. Choose another one in Preferences.";
+    editorState();
+}
 // Capture only messages addressed to this application, without a keyboard hook.
 void App::beginTextInput(HWND input) {
     if (!shortcutRegistry || keyCaptureTarget || engine.snapshot().state != RunState::Idle) return;
@@ -29,7 +56,7 @@ void App::resumeShortcuts() {
     for (int i = 0; i < 4; ++i) hotkeys[i] = shortcutRegistry->active(i);
     if (std::any_of(std::begin(hotkeys), std::end(hotkeys), [](bool active) { return !active; }))
         notice = L"A shortcut is no longer available. Choose another one in Preferences.";
-    editorState(); InvalidateRect(hwnd, nullptr, FALSE);
+    updateTypingProtection(); editorState(); InvalidateRect(hwnd, nullptr, FALSE);
 }
 void App::acceptCapturedKey(uint16_t key, uint8_t modifiers) {
     auto name = keyName(key, modifiers);

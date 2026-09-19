@@ -88,6 +88,19 @@ bool loadPreferences(const std::filesystem::path& file, Preferences& settings, s
     settings = std::move(candidate); return true;
 }
 void HotkeyRegistry::clear() { for (auto& r : registrations_) { if (r.id) release_(r.id); r = {}; } }
+void HotkeyRegistry::suspendLaunchShortcuts() {
+    for (size_t i = 0; i < registrations_.size(); ++i) if (i != 2 && registrations_[i].id) {
+        release_(registrations_[i].id); registrations_[i] = {};
+    }
+}
+void HotkeyRegistry::resumeMissing(const Hotkeys& keys) {
+    std::wstring error; if (!validHotkeys(keys, error)) return;
+    for (size_t i = 0; i < registrations_.size(); ++i) if (!registrations_[i].id) {
+        int id = 0x510;
+        while (std::any_of(registrations_.begin(), registrations_.end(), [&](const Binding& item) { return item.id == id; })) ++id;
+        if (acquire_(id, keys[i])) registrations_[i] = {id, keys[i]};
+    }
+}
 int HotkeyRegistry::actionFor(int id) const {
     for (int i = 0; i < 4; ++i) if (registrations_[i].id && registrations_[i].id == id) return i;
     return -1;
